@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.pytest-cache-codex/
+.ruff_cache/
+.pytest-tmp-codex-run/
+
+# Virtual environments
+.venv
+.venv/
+.venv_paddleocr/
+
+# Local configuration and runtime data
+.env
+.env.*
+!.env.example
+storage/
+*.db
+*.db-shm
+*.db-wal

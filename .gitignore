@@ -1,0 +1,43 @@
+# 项目工具与虚拟环境
+.tools/
+.models/
+.agents/
+.workbuddy/
+backend/.venv/
+backend/.venv_paddleocr/
+backend/.pytest-tmp-codex-run/
+backend/.pytest-cache-codex/
+
+# 前端依赖与构建产物
+frontend/node_modules/
+frontend/.vinext/
+frontend/.next/
+frontend/dist/
+frontend/.wrangler/
+
+# 运行数据
+storage/
+*.db
+*.db-shm
+*.db-wal
+
+# 本地测试素材与截图
+test/*.pdf
+展示/
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
