@@ -72,12 +72,16 @@ class IngestionManager:
 
             parsed_dir = self.settings.data_dir / "parsed" / document_id
 
+            last_parse_progress = 2.0
+
             def progress(value: float, message: str) -> None:
+                nonlocal last_parse_progress
+                last_parse_progress = max(last_parse_progress, value)
                 self.repository.update_job(
                     job_id,
                     status="RUNNING",
                     stage="parsing",
-                    progress=value,
+                    progress=last_parse_progress,
                     message=message,
                 )
 

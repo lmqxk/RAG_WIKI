@@ -7,6 +7,7 @@ backend/.venv/
 backend/.venv_paddleocr/
 backend/.pytest-tmp-codex-run/
 backend/.pytest-cache-codex/
+backend/.tmp/
 
 # 前端依赖与构建产物
 frontend/node_modules/
@@ -23,6 +24,7 @@ storage/
 
 # 本地测试素材与截图
 test/*.pdf
+test/*_paddlevl/
 展示/
 
 # 环境变量与密钥

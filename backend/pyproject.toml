@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 rag-api = "backend.main:run"
+rag-rerank = "backend.rerank_server:run"
 rag-worker = "backend.worker:run"
 
 [project.optional-dependencies]

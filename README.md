@@ -22,10 +22,12 @@
 
 - 单次上传一份 PDF，知识库可连续加入多份文档。
 - 支持 100 MB、600 页以内的文本型或扫描型 PDF。
-- 默认通过 MinerU Pipeline 全量解析 PDF，优先保留表格、图片、章节、条款和页码结构。
+- 默认通过 OpenDataLab PDF-Extract-Kit 管线解析 PDF，优先保留表格、图片、章节、条款和页码结构。
 - 条款、章节、正文、表格、图片位置、PDF 页码和纸面页码结构化。
 - SQLite FTS5 BM25 + Qdrant Local 向量召回 + RRF + Rerank。
 - 单文档问答、跨文档综合回答和新旧规范对比。
+- 对比类问题带轻量 Agentic 编排：Planner LLM 自动拆解多维度检索计划，并行检索后按文档组织资料包。
+- 流式回答接口记录检索耗时、首 token 时间和总耗时，方便持续调优。
 - 回答末尾附引用，引用卡片可跳转到 PDF 原页。
 - 区分规范正文与条文说明，确定性结论优先规范正文。
 - 未配置外部模型时使用离线证据模式，系统仍可完成检索和原文引用。
@@ -45,8 +47,9 @@ flowchart LR
     C --> S[(SQLite FTS5)]
     C --> Q[(Qdrant)]
 
-    R --> S
-    R --> Q
+    R --> P2[轻量查询规划]
+    P2 --> S
+    P2 --> Q
     R --> E[证据融合与排序]
     E --> G
     G --> O[Ollama / OpenAI 兼容模型]
@@ -58,12 +61,12 @@ flowchart LR
 
 ```text
 PDF 上传
-  → MinerU 全量文档解析
+  → PDF-Extract-Kit 全量文档解析
   → 章节、条款、表格、图片位置和页码结构化
   → 文本块切分
   → 全文索引与向量索引
-  → 多路召回与结果融合
-  → 大模型依据证据生成回答
+  → 查询规划、分文档召回与结果融合
+  → 大模型依据资料生成回答
   → 引用回链 PDF 原页
 ```
 
@@ -73,10 +76,11 @@ PDF 上传
 | --- | --- | --- |
 | Web 工作台 | `frontend/app/RagDashboard.tsx` | 知识库管理、文档选择、问答和引用查看 |
 | API 入口 | `backend/src/backend/main.py` | 健康检查、文档、任务、文件和问答接口 |
-| 文档解析 | `backend/src/backend/parser.py` | 默认 MinerU 全量解析 PDF，并保留表格、图片和版面信息 |
+| 文档解析 | `backend/src/backend/parser.py` | 默认 PDF-Extract-Kit 管线解析 PDF，并保留表格、图片和版面信息 |
 | 文档入库 | `backend/src/backend/ingestion.py` | 解析、切分、索引和任务状态编排 |
 | 文本切分 | `backend/src/backend/chunking.py` | 按章节、条款和页码生成检索块 |
-| 检索编排 | `backend/src/backend/retrieval.py` | 条款定位、全文检索、向量检索和结果融合 |
+| 检索编排 | `backend/src/backend/retrieval.py` | 条款定位、全文检索、向量检索、跨文档平衡和结果融合 |
+| Agentic 检索 | `backend/src/backend/agent.py` | LLM JSON 规划、多维度查询改写、并行检索步骤和回退计划 |
 | 数据仓储 | `backend/src/backend/repository.py` | 文档、任务、文本块和全文索引持久化 |
 | 向量索引 | `backend/src/backend/vector_index.py` | Qdrant 集合管理与相似度查询 |
 | 模型服务 | `backend/src/backend/providers.py` | Embedding、Rerank 和回答模型适配 |
@@ -112,7 +116,7 @@ ollama list
 RAG_OPENAI_BASE_URL=http://127.0.0.1:11434/v1
 RAG_OPENAI_API_KEY=ollama-local
 RAG_CHAT_MODEL=jewelzufo/MiniCPM5-1B
-RAG_CHAT_MAX_TOKENS=1024
+RAG_CHAT_MAX_TOKENS=2048
 RAG_CHAT_THINK=false
 ```
 
@@ -152,8 +156,8 @@ RAG_ZB/
 
 项目不做全局安装，也不会自动修改 `.env`、系统 PATH 或系统配置。
 
-默认解析链路依赖 MinerU。MinerU 模型和缓存固定在项目 `.models` 目录，避免污染系统缓存。
-如果只是调试轻量 OCR，可临时设置 `RAG_SCAN_PARSER=rapidocr`，但表格和图片位置效果会弱于 MinerU。
+默认解析链路使用 `pdf-extract-kit` 管线。解析模型和缓存固定在项目 `.models` 目录，避免污染系统缓存。
+如果只是调试轻量 OCR，可临时设置 `RAG_SCAN_PARSER=rapidocr`，但表格和图片位置效果会弱于 PDF-Extract-Kit。
 
 ## 外部模型配置
 
@@ -247,6 +251,25 @@ $env:RAG_RERANK_MODEL = "your-rerank-model"
 ```
 
 如果供应商字段不同，应修改 `backend/src/backend/providers.py` 中对应 Provider，不能直接假定兼容。
+
+### 跨文档对比
+
+对比类问题会先经过轻量查询规划，不依赖 LangChain 或 LlamaIndex：
+
+```text
+识别 comparison
+  → Planner LLM 生成 JSON 检索计划
+  → 拆成多条覆盖不同维度的检索语句
+  → 并行执行 search_general / search_in_document
+  → 合并、去重、重排并做文档间平衡
+  → 按文档分组组织资料包
+  → LLM 输出结论、对比要点和资料不足
+```
+
+如果问题中包含 `GB55037-2022`、`GB50016-2014` 这类标准号，系统会优先按标准号匹配 READY 文档。
+如果只问“新旧规范”，系统会在可检索文档中按版本尝试选择新旧文档。前端手动勾选文档时，以手动选择为准。
+
+当前效果相比早期单次检索更稳定：跨文档、对比和资料不足类问题会先生成多条查询改写，再从不同文档和维度补充召回，减少只命中文档开头总说明、前言或目录的情况。
 
 ## 开发验证
 

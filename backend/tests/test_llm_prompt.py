@@ -12,14 +12,12 @@ import json
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend" / "src"))
 
 from backend.config import Settings  # noqa: E402
 from backend.domain import SearchHit  # noqa: E402
-from backend.providers import ChatProvider, clean_answer_text  # noqa: E402
-
+from backend.providers import ChatProvider  # noqa: E402
 
 QUESTION = "石膏空心条板隔墙燃烧性能"
 QUERY_TYPE = "fact"
@@ -152,8 +150,6 @@ def main() -> int:
     print(raw)
     print()
 
-    print("=== 清洗后回答 ===")
-    print(clean_answer_text(raw))
     return 0
 
 

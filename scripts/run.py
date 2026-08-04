@@ -7,10 +7,11 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
+BACKEND_SRC = BACKEND / "src"
 FRONTEND = ROOT / "frontend"
 PYTHON = BACKEND / ".venv" / "Scripts" / "python.exe"
 NODE = (
@@ -21,6 +22,16 @@ NODE = (
     / "node.exe"
 )
 NPM_CLI = ROOT / ".tools" / "npm-cli" / "package" / "bin" / "npm-cli.js"
+
+sys.path.insert(0, str(BACKEND_SRC))
+from backend.config import get_settings  # noqa: E402
+
+
+def local_rerank_enabled(url: str | None) -> bool:
+    if not url:
+        return False
+    parsed = urlparse(url)
+    return parsed.hostname in {"127.0.0.1", "localhost"} and parsed.path.rstrip("/") == "/rerank"
 
 
 def wait_for(url: str, timeout: float = 30) -> bool:
@@ -43,6 +54,7 @@ def main() -> int:
             print(f"  - {path}")
         return 2
 
+    settings = get_settings()
     environment = os.environ.copy()
     environment.update(
         {
@@ -50,6 +62,22 @@ def main() -> int:
             "npm_config_cache": str(ROOT / ".tools" / "npm-cache"),
         }
     )
+    rerank = None
+    if local_rerank_enabled(settings.rerank_base_url):
+        rerank = subprocess.Popen(
+            [
+                str(PYTHON),
+                "-m",
+                "uvicorn",
+                "backend.rerank_server:app",
+                "--host",
+                settings.local_rerank_host,
+                "--port",
+                str(settings.local_rerank_port),
+            ],
+            cwd=BACKEND,
+            env=environment,
+        )
     api = subprocess.Popen(
         [
             str(PYTHON),
@@ -69,7 +97,7 @@ def main() -> int:
         cwd=FRONTEND,
         env={**environment, "PATH": f"{NODE.parent};{environment.get('PATH', '')}"},
     )
-    processes = [api, web]
+    processes = [process for process in (rerank, api, web) if process is not None]
 
     def stop(_signum: int | None = None, _frame: object | None = None) -> None:
         for process in processes:
@@ -84,12 +112,25 @@ def main() -> int:
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     try:
+        rerank_ready = True
+        if rerank is not None:
+            rerank_ready = wait_for(
+                f"http://{settings.local_rerank_host}:{settings.local_rerank_port}/health",
+                timeout=20,
+            )
         api_ready = wait_for("http://127.0.0.1:8000/api/health")
         web_ready = wait_for("http://127.0.0.1:3000/")
         if api_ready and web_ready:
             print("\n规智库已启动：")
             print("  Web: http://localhost:3000")
             print("  API: http://127.0.0.1:8000/docs")
+            if rerank is not None:
+                status = "已启动" if rerank_ready else "启动中/不可用，主后端会降级本地排序"
+                print(
+                    "  Rerank: "
+                    f"http://{settings.local_rerank_host}:{settings.local_rerank_port}/rerank"
+                    f" ({status})"
+                )
             print("按 Ctrl+C 停止服务。\n")
         else:
             print("服务启动超时，请查看上方日志。")

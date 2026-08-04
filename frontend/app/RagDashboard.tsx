@@ -67,6 +67,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { MarkdownMessage } from "@/components/markdown-message";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -207,6 +208,45 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json();
 }
 
+async function streamChat(
+  payload: { question: string; document_ids?: string[] },
+  onDelta: (text: string) => void,
+): Promise<ChatResult> {
+  const response = await fetch(`${API_BASE}/api/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body) {
+    const fallback = await response.json().catch(() => null);
+    throw new Error(fallback?.detail ?? `请求失败（${response.status}）`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResult: ChatResult | null = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      if (event.event === "delta") {
+        onDelta(String(event.text ?? ""));
+      } else if (event.event === "done") {
+        finalResult = event.result as ChatResult;
+      } else if (event.event === "error") {
+        throw new Error(String(event.message ?? "问答失败"));
+      }
+    }
+  }
+  if (!finalResult) throw new Error("问答流中断，未收到完成事件");
+  return finalResult;
+}
+
 export function RagDashboard() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -335,38 +375,60 @@ export function RagDashboard() {
       setNotice("请先上传并完成至少一份规范的解析。");
       return;
     }
+    const assistantId = crypto.randomUUID();
     setMessages((current) => [
       ...current,
       { id: crypto.randomUUID(), role: "user", content: trimmed },
+      { id: assistantId, role: "assistant", content: "" },
     ]);
     setQuestion("");
     setAnswering(true);
     setNotice(null);
+    const requestPayload = {
+      question: trimmed,
+      document_ids: selectedIds.size ? [...selectedIds] : undefined,
+    };
     try {
-      const result = await api<ChatResult>("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question: trimmed,
-          document_ids: selectedIds.size ? [...selectedIds] : undefined,
-        }),
+      const result = await streamChat(requestPayload, (delta) => {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId
+              ? { ...message, content: `${message.content}${delta}` }
+              : message,
+          ),
+        );
       });
       setActiveResult(result);
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: result.answer,
-          result,
-        },
-      ]);
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId
+            ? { ...message, content: result.answer, result }
+            : message,
+        ),
+      );
     } catch (error) {
-      const text = error instanceof Error ? error.message : "问答失败";
-      setMessages((current) => [
-        ...current,
-        { id: crypto.randomUUID(), role: "assistant", content: text },
-      ]);
+      try {
+        const result = await api<ChatResult>("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestPayload),
+        });
+        setActiveResult(result);
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId
+              ? { ...message, content: result.answer, result }
+              : message,
+          ),
+        );
+      } catch (fallbackError) {
+        const text = fallbackError instanceof Error ? fallbackError.message : "问答失败";
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId ? { ...message, content: text } : message,
+          ),
+        );
+      }
     } finally {
       setAnswering(false);
     }
@@ -718,6 +780,10 @@ function ChatWorkspace({
   onSuggestion: (value: string) => void;
   onOpenEvidence: (result: ChatResult) => void;
 }) {
+  const hasPendingAssistant = messages.some(
+    (message) => message.role === "assistant" && !message.result,
+  );
+
   return (
     <Card className="min-w-0 overflow-hidden shadow-sm">
       <CardHeader className="border-b">
@@ -775,7 +841,13 @@ function ChatWorkspace({
                         </Badge>
                       </div>
                     )}
-                    <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                    <div className="break-words">
+                      {message.role === "assistant" && !message.content && !message.result ? (
+                        <PendingAnswer />
+                      ) : (
+                        <MarkdownMessage content={message.content} />
+                      )}
+                    </div>
                     {message.result && (
                       <CitationPreviewStrip answer={message.content} result={message.result} />
                     )}
@@ -794,7 +866,7 @@ function ChatWorkspace({
                   </div>
                 </article>
               ))}
-              {answering && (
+              {answering && !hasPendingAssistant && (
                 <div className="flex gap-3">
                   <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                     <Bot className="size-4" />
@@ -841,12 +913,35 @@ function ChatWorkspace({
   );
 }
 
+function PendingAnswer() {
+  const steps = ["规划检索中", "核对资料中", "组织回答中"];
+  const [stepIndex, setStepIndex] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setStepIndex((current) => Math.min(current + 1, steps.length - 1));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [steps.length]);
+
+  return (
+    <div className="flex items-center gap-3 text-muted-foreground">
+      <span className="text-sm">{steps[stepIndex]}</span>
+      <span className="flex gap-1" aria-hidden="true">
+        <span className="size-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.2s]" />
+        <span className="size-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.1s]" />
+        <span className="size-1.5 animate-bounce rounded-full bg-current" />
+      </span>
+    </div>
+  );
+}
+
 function CitationPreviewStrip({ answer, result }: { answer: string; result: ChatResult }) {
   const citedIndexes = Array.from(answer.matchAll(/\[(\d+)\]/g), (match) => Number(match[1]));
   const citedPreview = citedIndexes
     .map((index) => result.citations.find((citation) => citation.index === index))
     .find((citation) => citation?.preview_image_url);
-  const citation = citedPreview ?? result.citations.find((item) => item.preview_image_url);
+  const citation = citedPreview ?? null;
   if (!citation) return null;
   return (
     <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -1174,9 +1269,12 @@ function EvidenceSheet({
 }) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-xl">
-        <SheetHeader className="border-b p-5 text-left">
-          <div className="flex items-center gap-2">
+      <SheetContent
+        side="right"
+        className="w-[min(100vw,40rem)] max-w-[100vw] gap-0 overflow-hidden p-0 sm:max-w-[min(100vw,40rem)]"
+      >
+        <SheetHeader className="min-w-0 border-b p-5 pr-12 text-left">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Badge variant="secondary">{result?.citations.length ?? 0} 条资料</Badge>
             {result && <Badge variant="outline">{QUERY_LABEL[result.query_type] ?? result.query_type}</Badge>}
           </div>
@@ -1184,7 +1282,7 @@ function EvidenceSheet({
           <SheetDescription>点击页码可以在新窗口预览 PDF 对应页面。</SheetDescription>
         </SheetHeader>
         <ScrollArea className="h-[calc(100vh-150px)]">
-          <div className="flex flex-col gap-4 p-5">
+          <div className="flex min-w-0 flex-col gap-4 p-5">
             {!result?.citations.length ? (
               <div className="flex min-h-72 flex-col items-center justify-center text-center">
                 <FileSearch className="size-8 text-muted-foreground" />
@@ -1195,7 +1293,7 @@ function EvidenceSheet({
               </div>
             ) : (
               result.citations.map((citation) => (
-                <Card key={citation.chunk_id} className="shadow-none">
+                <Card key={citation.chunk_id} className="min-w-0 shadow-none">
                   <CardHeader className="pb-3">
                     <div className="flex items-start justify-between gap-3">
                       <Badge>[{citation.index}]</Badge>
@@ -1203,8 +1301,10 @@ function EvidenceSheet({
                         {citation.score.toFixed(3)}
                       </span>
                     </div>
-                    <CardTitle className="mt-2 text-base">{citation.document_title}</CardTitle>
-                    <CardDescription>
+                    <CardTitle className="mt-2 break-words text-base">
+                      {citation.document_title}
+                    </CardTitle>
+                    <CardDescription className="break-words">
                       {[citation.standard_no, citation.version ? `${citation.version} 版` : null]
                         .filter(Boolean)
                         .join(" · ")}
@@ -1219,12 +1319,12 @@ function EvidenceSheet({
                         {citation.source_type.startsWith("normative") ? "规范正文" : "条文说明"}
                       </Badge>
                     </div>
-                    <blockquote className="border-l-2 pl-3 text-sm leading-6 text-muted-foreground">
+                    <blockquote className="break-words border-l-2 pl-3 text-sm leading-6 text-muted-foreground">
                       {citation.quote}
                     </blockquote>
                   </CardContent>
                   <CardFooter className="border-t pt-4">
-                    <Button variant="outline" className="w-full" asChild>
+                    <Button variant="outline" className="h-auto min-h-9 w-full whitespace-normal" asChild>
                       <a
                         href={`${API_BASE}/api/documents/${citation.document_id}/file#page=${citation.pdf_page}`}
                         target="_blank"

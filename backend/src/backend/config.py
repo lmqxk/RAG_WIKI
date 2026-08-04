@@ -46,20 +46,38 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: str | None = None
     chat_model: str | None = None
-    chat_max_tokens: int = 1024
+    chat_max_tokens: int = 2048
     chat_think: bool | None = None
     embedding_model: str | None = None
     embedding_dimension: int = 384
 
-    rerank_base_url: str | None = None
-    rerank_api_key: str | None = None
-    rerank_model: str | None = None
+    rerank_base_url: str | None = "http://127.0.0.1:8011/rerank"
+    rerank_api_key: str | None = "local"
+    rerank_model: str | None = "jina-reranker-v3.5"
+    local_rerank_model_dir: Path = (
+        PROJECT_ROOT
+        / ".models"
+        / "modelscope"
+        / "models"
+        / "jinaai--jina-reranker-v3.5"
+        / "snapshots"
+        / "master"
+    )
+    local_rerank_host: str = "127.0.0.1"
+    local_rerank_port: int = 8011
+    local_rerank_device: str = "auto"
+    local_rerank_hf_home: Path = PROJECT_ROOT / ".models" / "huggingface"
 
-    retrieval_bm25_top_k: int = 30
-    retrieval_dense_top_k: int = 30
+    retrieval_bm25_top_k: int = 20
+    retrieval_dense_top_k: int = 20
     retrieval_fused_top_k: int = 20
     retrieval_final_top_k: int = 8
     answer_max_citations: int = 6
+    agentic_retrieval_enabled: bool = True
+    agentic_planner_llm_enabled: bool = True
+    agentic_max_steps: int = 4
+    agentic_parallel_workers: int = 4
+    agentic_min_hits: int = 4
 
     sqlite_path: Path | None = Field(default=None)
     qdrant_path: Path | None = Field(default=None)
@@ -69,6 +87,8 @@ class Settings(BaseSettings):
         self.sqlite_path = (self.sqlite_path or self.data_dir / "rag.db").resolve()
         self.qdrant_path = (self.qdrant_path or self.data_dir / "qdrant").resolve()
         self.mineru_model_dir = self.mineru_model_dir.resolve()
+        self.local_rerank_model_dir = self.local_rerank_model_dir.resolve()
+        self.local_rerank_hf_home = self.local_rerank_hf_home.resolve()
 
     def ensure_directories(self) -> None:
         for path in (
@@ -77,6 +97,7 @@ class Settings(BaseSettings):
             self.data_dir / "parsed",
             self.data_dir / "qdrant",
             self.mineru_model_dir,
+            self.local_rerank_hf_home,
         ):
             path.mkdir(parents=True, exist_ok=True)
 

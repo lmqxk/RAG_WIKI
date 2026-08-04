@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import time
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -10,9 +14,10 @@ from uuid import uuid4
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from . import __version__
+from .agent import AgenticRetriever
 from .config import Settings, get_settings
 from .db import Database
 from .ingestion import IngestionManager
@@ -32,6 +37,8 @@ from .schemas import (
 from .service import RagService
 from .vector_index import VectorIndex
 
+logger = logging.getLogger("uvicorn.error")
+
 
 def build_components(
     settings: Settings,
@@ -50,9 +57,10 @@ def build_components(
     vector_index = VectorIndex(settings, embeddings)
     reranker = RerankProvider(settings)
     retriever = HybridRetriever(settings, repository, vector_index, reranker)
+    agentic_retriever = AgenticRetriever(settings, repository, retriever)
     chat = ChatProvider(settings)
     ingestion = IngestionManager(settings, repository, parser, vector_index)
-    service = RagService(settings, repository, ingestion, retriever, chat)
+    service = RagService(settings, repository, ingestion, agentic_retriever, chat)
     return repository, parser, vector_index, ingestion, service
 
 
@@ -252,6 +260,126 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         return service.chat(payload.question, payload.document_ids)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"问答处理失败：{exc}") from exc
+
+
+def _stream_event(event: str, data: dict[str, object]) -> str:
+    return json.dumps({"event": event, **data}, ensure_ascii=False) + "\n"
+
+
+def _write_chat_metrics(settings: Settings, metrics: dict[str, object]) -> None:
+    log_dir = settings.data_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with (log_dir / "chat-metrics.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(metrics, ensure_ascii=False) + "\n")
+
+
+@app.post("/api/chat/stream")
+def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse:
+    service: RagService = request.app.state.service
+    settings: Settings = request.app.state.settings
+
+    def generate() -> Iterator[str]:
+        started_at = time.perf_counter()
+        first_token_at: float | None = None
+        answer_parts: list[str] = []
+        try:
+            context = service.chat_context(payload.question, payload.document_ids)
+            retrieved_at = time.perf_counter()
+            yield _stream_event(
+                "meta",
+                {
+                    "trace_id": context.trace_id,
+                    "query_type": context.query_type,
+                    "evidence_status": context.evidence_status,
+                    "used_external_llm": context.used_external_llm,
+                    "citation_count": len(context.citations),
+                    "retrieval_ms": round((retrieved_at - started_at) * 1000, 2),
+                    **{
+                        name: round(value, 2) if value is not None else None
+                        for name, value in context.retrieval_timings.items()
+                    },
+                },
+            )
+            for delta in service.chat_provider.answer_stream(
+                payload.question,
+                context.hits,
+                context.query_type,
+            ):
+                if first_token_at is None:
+                    first_token_at = time.perf_counter()
+                    logger.info(
+                        "chat_stream_first_token %s",
+                        json.dumps(
+                            {
+                                "trace_id": context.trace_id,
+                                "first_token_ms": round(
+                                    (first_token_at - started_at) * 1000,
+                                    2,
+                                ),
+                                "answer_llm_ttft_ms": round(
+                                    (first_token_at - retrieved_at) * 1000,
+                                    2,
+                                ),
+                                "hits": len(context.hits),
+                                "llm": context.used_external_llm,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                answer_parts.append(delta)
+                yield _stream_event("delta", {"text": delta})
+            if context.used_external_llm and not answer_parts:
+                fallback_answer = service.chat_provider.answer(
+                    payload.question,
+                    context.hits,
+                    context.query_type,
+                )
+                if fallback_answer:
+                    first_token_at = first_token_at or time.perf_counter()
+                    answer_parts.append(fallback_answer)
+                    yield _stream_event("delta", {"text": fallback_answer})
+            completed_at = time.perf_counter()
+            answer = "".join(answer_parts).strip()
+            response = service.chat_response_from_context(context, answer)
+            total_ms = (completed_at - started_at) * 1000
+            first_token_ms = (
+                round((first_token_at - started_at) * 1000, 2)
+                if first_token_at is not None
+                else None
+            )
+            metrics = {
+                "trace_id": context.trace_id,
+                "retrieval_ms": round((retrieved_at - started_at) * 1000, 2),
+                "first_token_ms": first_token_ms,
+                "answer_llm_ttft_ms": (
+                    round((first_token_at - retrieved_at) * 1000, 2)
+                    if first_token_at is not None
+                    else None
+                ),
+                **{
+                    name: round(value, 2) if value is not None else None
+                    for name, value in context.retrieval_timings.items()
+                },
+                "total_ms": round(total_ms, 2),
+                "answer_chars": len(answer),
+                "citations": len(context.citations),
+                "query_type": context.query_type,
+                "llm": context.used_external_llm,
+            }
+            _write_chat_metrics(settings, metrics)
+            logger.info("chat_stream_done %s", json.dumps(metrics, ensure_ascii=False))
+            yield _stream_event(
+                "done",
+                {
+                    "result": response.model_dump(mode="json"),
+                    "metrics": metrics,
+                },
+            )
+        except Exception as exc:
+            logger.exception("chat_stream_error")
+            yield _stream_event("error", {"message": f"问答处理失败：{exc}"})
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 def run() -> None:

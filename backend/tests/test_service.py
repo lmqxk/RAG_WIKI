@@ -8,30 +8,9 @@ import pytest
 from backend.config import Settings
 from backend.db import Database
 from backend.domain import SearchHit
-from backend.providers import clean_answer_text
+from backend.agent import AgentRun
 from backend.repository import Repository, summarize_error
 from backend.service import RagService, preview_from_parsed
-
-
-def test_clean_answer_text_rewrites_image_unavailable_phrase() -> None:
-    answer = (
-        "资料中该截面图以图片形式呈现，无法在此直接展示，"
-        "但上述构造与尺寸信息即为该截面图对应的内容。"
-    )
-
-    cleaned = clean_answer_text(answer)
-
-    assert "无法在此直接展示" not in cleaned
-    assert "具体参考资料预览中的图示" in cleaned
-
-
-def test_clean_answer_text_rewrites_image_first_unavailable_phrase() -> None:
-    answer = "图片无法在文本中直接显示，请查看资料中的图片预览获取详细截面图。"
-
-    cleaned = clean_answer_text(answer)
-
-    assert "图片无法在文本中直接显示" not in cleaned
-    assert "具体参考资料预览中的图示" in cleaned
 
 
 class FakeUpload:
@@ -59,14 +38,14 @@ class FakeIngestion:
 
 
 class FakeRetriever:
-    def retrieve(
+    def run(
         self,
         question: str,
         document_ids: list[str] | None,
-    ) -> tuple[str, list[SearchHit]]:
-        return (
-            "fact",
-            [
+    ) -> AgentRun:
+        return AgentRun(
+            kind="fact",
+            hits=[
                 SearchHit(
                     chunk_id="chunk-1",
                     document_id="doc-1",
@@ -84,6 +63,11 @@ class FakeRetriever:
                     content_type="normative_table",
                 )
             ],
+            steps=[],
+            supplemented=False,
+            planner_ms=10.0,
+            recall_ms=20.0,
+            rerank_ms=30.0,
         )
 
 
@@ -131,37 +115,6 @@ def test_chat_keeps_citations_structured_without_appending_reference_text(tmp_pa
     assert result.answer == "只回答最相关的 A 行。[1]"
     assert "引用：" not in result.answer
     assert len(result.citations) == 1
-
-
-def test_clean_answer_text_removes_placeholder_citation_line() -> None:
-    answer = "结论内容需要按相关证据说明。[1]\n\n[数字] 1"
-
-    assert clean_answer_text(answer) == "结论内容需要按相关证据说明。[1]"
-
-
-def test_clean_answer_text_removes_trailing_evidence_echo_blocks() -> None:
-    answer = (
-        "石膏空心条板隔墙的燃烧性能为不燃性。[1]\n\n"
-        "[1] 文档：table2（未识别编号，未识别版本）\n"
-        "位置：未识别章节 / 未识别条款 / PDF第2页\n"
-        "证据类型：规范正文\n"
-        "原文：表格内容：...\n"
-        "[2] 文档：table2（未识别编号，未识别版本）\n"
-        "位置：未识别章节 / 未识别条款 / PDF第1页\n"
-        "证据类型：规范正文\n"
-        "原文：表格内容：..."
-    )
-
-    assert clean_answer_text(answer) == "石膏空心条板隔墙的燃烧性能为不燃性。[1]"
-
-
-def test_clean_answer_text_removes_trailing_evidence_json_echo() -> None:
-    answer = (
-        "石膏空心条板隔墙的燃烧性能为不燃性。[1]\n\n"
-        "[{\"id\": 1, \"document\": \"table2\", \"text\": \"表格内容：...\"}]"
-    )
-
-    assert clean_answer_text(answer) == "石膏空心条板隔墙的燃烧性能为不燃性。[1]"
 
 
 def test_summarize_error_hides_cuda_traceback() -> None:

@@ -103,6 +103,44 @@ RapidOCR 只能解决文字识别，表格结构、图片位置和 Markdown 版�
 | `bbox` | 页面坐标，用于保留阅读顺序和版面信息 |
 | `level` | 部分解析器返回的标题层级 |
 | `printed_page` | 纸面页码，通常来自页脚 |
+| `images` | 当前块关联的图片列表，主要用于表格内图片和普通图片预览 |
+
+### 表格内图片结构
+
+PDF-Extract-Kit 的表格 HTML 中可能包含 `<img src="...">`。解析阶段会把这些图片从表格单元格里抽出来，写入当前 `PageBlock.images`。
+
+典型结构：
+
+```json
+{
+  "page": 2,
+  "type": "table",
+  "text": "表格标题：续附表2 ...",
+  "images": [
+    {
+      "path": "images/c0fb25e649779c5d07746aed829aaa20e71dbcb18263c3cd9f021acd04fa4390.jpg",
+      "caption": "橡檩屋顶截面",
+      "row_context": "屋顶承重构件",
+      "column_context": "截面图和结构厚度或截面最小尺寸(mm)",
+      "cell_text": "橡檩屋顶截面0.50轻型木桁架屋顶截面",
+      "order": 1
+    }
+  ]
+}
+```
+
+字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `path` | 解析产物中的相对图片路径 |
+| `caption` | 图片 caption；表格单元格内图片优先使用图片前后的邻近文字 |
+| `row_context` | 图片所在行的上下文，通常来自首列或行标题 |
+| `column_context` | 图片所在列的表头 |
+| `cell_text` | 图片所在单元格的完整文本 |
+| `order` | 同一单元格内图片顺序 |
+
+这样做是为了让“屋顶承重构件截面图”“轻型木桁架屋顶截面”等问题能把表格文字和对应图片关联起来，而不是只知道这一页有图片。
 
 ## 解析结果落盘
 
@@ -117,7 +155,7 @@ storage/parsed/{document_id}/document.md
 
 ## 重新解析已有文档
 
-如果改的是 PDF 解析器、PDF-Extract-Kit 输出转换、OCR、表格解析或 `normalized.json` 生成逻辑，只调用 `reindex` 不够，需要重新解析已有文档。
+如果改的是 PDF 解析器、PDF-Extract-Kit 输出转换、OCR、表格解析、表格内图片提取或 `normalized.json` 生成逻辑，只调用 `reindex` 不够，需要重新解析已有文档。
 
 重新解析接口：
 
@@ -163,6 +201,7 @@ curl.exe http://127.0.0.1:8000/api/jobs/{job_id}
 - 纸面页码和 PDF 物理页码不是同一个概念，引用跳转使用 PDF 物理页码。
 - 表格会以 `normative_table` 或 `commentary_table` 入库。
 - 图片位置会以 `normative_image` 或 `commentary_image` 入库；如果 PDF-Extract-Kit 提供 caption/path，会一起进入可检索文本。
+- 表格内图片的 `images` 结构只有重新解析后才会写入旧文档的 `normalized.json`；只重建索引不能补出这些字段。
 
 ## 关键配置
 

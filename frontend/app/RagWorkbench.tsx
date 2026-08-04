@@ -2,6 +2,8 @@
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
+import { MarkdownMessage } from "@/components/markdown-message";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 type Document = {
@@ -134,6 +136,45 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json();
 }
 
+async function streamChat(
+  payload: { question: string; document_ids?: string[] },
+  onDelta: (text: string) => void,
+): Promise<ChatResult> {
+  const response = await fetch(`${API_BASE}/api/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body) {
+    const fallback = await response.json().catch(() => null);
+    throw new Error(fallback?.detail ?? `请求失败（${response.status}）`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResult: ChatResult | null = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      if (event.event === "delta") {
+        onDelta(String(event.text ?? ""));
+      } else if (event.event === "done") {
+        finalResult = event.result as ChatResult;
+      } else if (event.event === "error") {
+        throw new Error(String(event.message ?? "问答失败"));
+      }
+    }
+  }
+  if (!finalResult) throw new Error("问答流中断，未收到完成事件");
+  return finalResult;
+}
+
 export function RagWorkbench() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -249,38 +290,60 @@ export function RagWorkbench() {
       setNotice("请先上传并完成至少一份规范的解析。");
       return;
     }
+    const assistantId = crypto.randomUUID();
     setMessages((current) => [
       ...current,
       { id: crypto.randomUUID(), role: "user", content: trimmed },
+      { id: assistantId, role: "assistant", content: "" },
     ]);
     setQuestion("");
     setAnswering(true);
     setNotice(null);
+    const requestPayload = {
+      question: trimmed,
+      document_ids: selectedIds.size ? [...selectedIds] : undefined,
+    };
     try {
-      const result = await api<ChatResult>("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question: trimmed,
-          document_ids: selectedIds.size ? [...selectedIds] : undefined,
-        }),
+      const result = await streamChat(requestPayload, (delta) => {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId
+              ? { ...message, content: `${message.content}${delta}` }
+              : message,
+          ),
+        );
       });
       setActiveResult(result);
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: result.answer,
-          result,
-        },
-      ]);
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId
+            ? { ...message, content: result.answer, result }
+            : message,
+        ),
+      );
     } catch (error) {
-      const text = error instanceof Error ? error.message : "问答失败";
-      setMessages((current) => [
-        ...current,
-        { id: crypto.randomUUID(), role: "assistant", content: text },
-      ]);
+      try {
+        const result = await api<ChatResult>("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestPayload),
+        });
+        setActiveResult(result);
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId
+              ? { ...message, content: result.answer, result }
+              : message,
+          ),
+        );
+      } catch (fallbackError) {
+        const text = fallbackError instanceof Error ? fallbackError.message : "问答失败";
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId ? { ...message, content: text } : message,
+          ),
+        );
+      }
     } finally {
       setAnswering(false);
     }
@@ -491,6 +554,10 @@ type ConversationProps = {
 };
 
 function Conversation(props: ConversationProps) {
+  const hasPendingAssistant = props.messages.some(
+    (message) => message.role === "assistant" && !message.result,
+  );
+
   return (
     <div className="conversation">
       {props.messages.length === 0 ? (
@@ -524,7 +591,13 @@ function Conversation(props: ConversationProps) {
                 </em>
               )}
             </div>
-            <div className="message-content">{message.content}</div>
+            <div className="message-content">
+              {message.role === "assistant" && !message.content && !message.result ? (
+                <PendingAnswer />
+              ) : (
+                <MarkdownMessage content={message.content} />
+              )}
+            </div>
             {message.result && (
               <CitationPreviewStrip answer={message.content} result={message.result} />
             )}
@@ -536,7 +609,7 @@ function Conversation(props: ConversationProps) {
           </article>
         ))
       )}
-      {props.answering && (
+      {props.answering && !hasPendingAssistant && (
         <article className="message assistant loading-answer">
           <div className="message-label"><span>智</span><strong>检索与核对中</strong></div>
           <div className="thinking-line"><i /><i /><i /></div>
@@ -547,12 +620,31 @@ function Conversation(props: ConversationProps) {
   );
 }
 
+function PendingAnswer() {
+  const steps = ["规划检索中", "核对资料中", "组织回答中"];
+  const [stepIndex, setStepIndex] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setStepIndex((current) => Math.min(current + 1, steps.length - 1));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [steps.length]);
+
+  return (
+    <div className="pending-answer">
+      <span>{steps[stepIndex]}</span>
+      <span className="thinking-line" aria-hidden="true"><i /><i /><i /></span>
+    </div>
+  );
+}
+
 function CitationPreviewStrip({ answer, result }: { answer: string; result: ChatResult }) {
   const citedIndexes = Array.from(answer.matchAll(/\[(\d+)\]/g), (match) => Number(match[1]));
   const citedPreview = citedIndexes
     .map((index) => result.citations.find((citation) => citation.index === index))
     .find((citation) => citation?.preview_image_url);
-  const previews = [citedPreview ?? result.citations.find((item) => item.preview_image_url)]
+  const previews = [citedPreview ?? null]
     .filter((citation): citation is Citation => Boolean(citation?.preview_image_url));
   if (!previews.length) return null;
   return (

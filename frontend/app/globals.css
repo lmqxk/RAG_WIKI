@@ -591,6 +591,7 @@ textarea:focus-visible {
   white-space: pre-wrap;
   font-size: 13px;
   line-height: 1.9;
+  overflow-wrap: anywhere;
 }
 
 .citation-jump {
@@ -653,6 +654,13 @@ textarea:focus-visible {
 
 .thinking-line i:nth-child(2) { animation-delay: 0.15s; }
 .thinking-line i:nth-child(3) { animation-delay: 0.3s; }
+
+.pending-answer {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+}
 
 @keyframes blink {
   0%, 70%, 100% { opacity: 0.2; transform: translateY(0); }
@@ -787,6 +795,7 @@ textarea:focus-visible {
   display: grid;
   gap: 12px;
   max-height: calc(100vh - 240px);
+  min-width: 0;
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -795,11 +804,15 @@ textarea:focus-visible {
   padding: 14px;
   border: 1px solid var(--line);
   background: var(--white);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .citation-topline {
   display: flex;
   justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
   color: var(--orange);
   font: 10px Consolas, monospace;
 }
@@ -812,6 +825,7 @@ textarea:focus-visible {
 .citation-card h3 {
   margin: 10px 0 7px;
   font: 600 15px Georgia, "Songti SC", serif;
+  overflow-wrap: anywhere;
 }
 
 .citation-tags {
@@ -841,6 +855,7 @@ textarea:focus-visible {
   color: #4e5752;
   font-size: 11px;
   line-height: 1.8;
+  overflow-wrap: anywhere;
 }
 
 .citation-card a {
@@ -849,9 +864,11 @@ textarea:focus-visible {
   border-top: 1px solid #e6e3da;
   display: flex;
   justify-content: space-between;
+  gap: 8px;
   color: var(--navy);
   font-size: 10px;
   text-decoration: none;
+  overflow-wrap: anywhere;
 }
 
 .pipeline-mini {

@@ -26,10 +26,10 @@ PDF 上传
 | --- | --- |
 | Web | Next.js、React、TypeScript、Tailwind CSS、shadcn/ui、lucide-react |
 | API | FastAPI、Pydantic、Uvicorn |
-| PDF 解析 | MinerU Pipeline、PyMuPDF、RapidOCR |
+| PDF 解析 | OpenDataLab PDF-Extract-Kit、MinerU VLM、PyMuPDF、RapidOCR |
 | 数据库存储 | SQLite、WAL、FTS5 |
 | 向量索引 | Qdrant Local |
-| RAG 检索 | BM25、Vector Search、Reciprocal Rank Fusion、Reranker |
+| RAG 检索 | QueryPlan、BM25、Vector Search、Reciprocal Rank Fusion、Reranker |
 | LLM 调用 | Ollama、本地模型、OpenAI-compatible Chat Completions |
 | Python 环境 | uv、项目级 `.venv` |
 | 前端依赖 | npm、项目级 `node_modules` |
@@ -38,7 +38,7 @@ PDF 上传
 
 系统内部可以按两层理解：
 
-- Document Intelligence：默认通过 MinerU 做 PDF document understanding，包括文本层识别、OCR、版面块提取、章节条款识别、表格处理、图片位置、页码映射和结构化落盘。
+- Document Intelligence：默认通过 OpenDataLab PDF-Extract-Kit 做 PDF document understanding，包括文本层识别、OCR、版面块提取、章节条款识别、表格处理、图片位置、页码映射和结构化落盘。
 - RAG Agent：负责 Query Understanding、Hybrid Retrieval、Rerank、证据组织、LLM 生成和引用回链。
 
 这两个概念不建议出现在最终用户界面，但必须出现在工程文档中，方便后续拆模块、扩展模型和定位问题。
@@ -63,6 +63,7 @@ PDF 上传
 - 当前适合少量规范文件的单机知识库，不是多租户平台。
 - 单个 PDF 默认上限由 `RAG_MAX_FILE_SIZE_MB` 和 `RAG_MAX_PDF_PAGES` 控制。
 - 未配置外部模型时，系统仍可返回检索证据，但综合归纳能力有限。
+- 对比类问题使用轻量 Agentic 编排：先规划目标文档，再分文档检索并按文档组织资料包。
 - Qdrant 当前使用本地嵌入式存储；规模扩大后建议迁移到独立 Qdrant 服务。
 
 ## 维护原则

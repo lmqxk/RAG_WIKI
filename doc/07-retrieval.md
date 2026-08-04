@@ -35,8 +35,9 @@
 
 ```text
 User Question
-  -> Query Understanding
-  -> focused_query()
+  -> QueryPlan
+  -> query_type() / focused_query()
+  -> comparison document planning
   -> exact clause search
   -> BM25 / SQLite FTS5
   -> Vector Search / Qdrant
@@ -62,18 +63,68 @@ score += 1 / (k + rank)
 
 ## 对比类问题
 
-如果用户选择了多份文档，并且问题被识别为 `comparison`：
+对比类问题采用轻量 Agentic 编排，不引入 LangChain 或 LlamaIndex。核心目标是先把“要对比什么、在哪些文档中对比、还缺哪些维度”拆清楚，再交给检索和 LLM。
+
+当前实现已经从固定规则扩展为“LLM 规划 + 代码执行”的混合方式：
+
+- `AgenticRetriever` 先调用 Planner LLM 输出 JSON 计划。
+- Planner LLM 自由生成多条 `query_rewrites` 和 `steps`，不再由代码拼接固定关键词。
+- 检索工具限制在 `search_general` 和 `search_in_document`，目标文档必须来自允许文档列表。
+- 规划失败、JSON 不合法或模型未配置时，自动回退到本地规则计划。
+- 多个检索步骤会并行执行，再统一去重、重排和按文档平衡。
+
+处理流程：
+
+```text
+用户问题
+  -> query_type() 识别 comparison
+  -> AgenticRetriever 生成检索计划
+  -> Planner LLM 自由拆解多个检索维度
+  -> 并行执行 search_general / search_in_document
+  -> 召回结果去重、Rerank、文档间平衡
+  -> ChatProvider 按文档分组组织资料包
+```
+
+这次改进后，跨文档对比不再只依赖一个笼统问题做单次召回。比如“新旧规范关于工业建筑防火要求的区别”，Planner 会倾向于拆成适用范围、条文要求、数值限制、构造或设施要求等多个维度分别检索，因此更容易命中正文条款和具体表格，而不是反复命中文档开头的总说明、前言或目录。
+
+目标文档来源优先级：
+
+- 前端手动选择的文档。
+- 问题中出现的标准号、标题、文件名或版本，如 `GB55037-2022`、`GB50016-2014`。
+- “新旧规范”“新版/旧版”等泛化问题，会在 READY 文档中按版本尝试选择新旧文档。
+
+如果用户选择了多份文档，或 planner 从问题中识别出多份目标文档：
 
 - 系统会按文档分别检索
 - 再做文档间平衡
 - 避免回答只被某一份文档的高分片段占满
+- LLM 收到的资料会按文档分组，而不是一组扁平列表
+
+这样回答更容易先判断“是否直接可比”。如果适用对象、限制条件或条款层级不同，回答应明确说明不能直接判断变严或放宽，再分别列出各文档规定。
+
+## 图片资料预览
+
+回答引用会携带 `preview_image_url`，用于前端在回答外层展示最相关的资料预览图。
+
+后端选择逻辑在 `backend/src/backend/service.py::preview_from_parsed()`：
+
+- 优先读取 `storage/parsed/{document_id}/normalized.json` 中当前页、当前块类型附近的 `images`。
+- 对图片的 `caption`、`row_context`、`column_context`、`cell_text` 和用户问题做词项匹配。
+- 如果命中表格内结构化图片，返回对应图片资源 URL。
+- 如果没有结构化 `images`，再回退到解析原始 `content_list.json` 里的 `img_path` / `image_path`。
+
+前端资料预览会优先根据回答正文中的引用编号选择图片，例如回答引用 `[4]` 时优先展示第 4 条资料的预览图；如果回答没有引用编号，才回退到第一条带图资料。
 
 ## 维护注意
 
 - `retrieval_final_top_k` 控制最终进入回答生成的证据数量。
 - `answer_max_citations` 控制最终返回给前端的引用数量。
+- `agentic_parallel_workers` 控制 Agentic 检索步骤并发数，默认 `4`。
+- `agentic_planner_llm_enabled` 控制是否启用 LLM JSON 规划；关闭后仍会使用本地规则计划。
+- 流式问答的耗时日志写入 `storage/logs/chat-metrics.jsonl`，包括检索耗时、首 token 时间、总耗时、引用数量和问题类型。
 - 调整检索参数后，需要用条款查询、主题总结、新旧对比三类问题分别验证。
 - 对规范类问题，精确条款和术语匹配通常比泛语义召回更可靠。
+- 短标题容易误命中，例如“规范”；文档识别会忽略过短标识，优先使用标准号和版本。
 
 ## 关键配置
 
@@ -90,4 +141,5 @@ score += 1 / (k + rank)
 ```powershell
 cd E:\lmq\RAG_ZB
 E:\lmq\RAG_ZB\.tools\uv\bin\uv.exe run --project backend pytest backend\tests\test_retrieval.py -q
+E:\lmq\RAG_ZB\.tools\uv\bin\uv.exe run --project backend pytest backend\tests\test_providers.py -q
 ```

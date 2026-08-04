@@ -102,9 +102,34 @@ storage/parsed/{document_id}/normalized.json
 
 它不会重新解析 PDF，只会重新执行切分和索引写入，适合调整切分规则后的快速验证。
 
+## 图片结构入库
+
+`normalized.json` 会保存每个 `PageBlock` 的 `images` 字段。这个字段用于记录图片路径、caption、表格行上下文、列上下文和单元格文本。
+
+`IngestionManager._save_parsed()` 写入：
+
+```json
+{
+  "page": 2,
+  "text": "...",
+  "type": "table",
+  "images": [
+    {
+      "path": "images/f078.jpg",
+      "caption": "轻型木桁架屋顶截面",
+      "row_context": "屋顶承重构件",
+      "column_context": "截面图和结构厚度或截面最小尺寸(mm)",
+      "cell_text": "..."
+    }
+  ]
+}
+```
+
+`reindex` 会读取已有 `normalized.json` 里的 `images` 并重新切分、索引。若旧文档的 `normalized.json` 里没有 `images`，需要走 `reparse` 重新解析 PDF。
+
 ## 维护注意
 
 - 入库线程数由 `RAG_MAX_WORKERS` 控制，当前默认是 1，避免大 PDF 并发时抢占内存。
 - `replace_chunks()` 和 `replace_document()` 是重建索引的核心配对，二者要保持一致。
-- 如果调整解析结果格式，需要同步更新 `_save_parsed()` 和 `_reindex()` 的读取逻辑。
+- 如果调整解析结果格式，需要同步更新 `_save_parsed()` 和 `_reindex()` 的读取逻辑，尤其是 `PageBlock.images` 这类结构化字段。
 - Qdrant Local 有文件锁，开发时不要同时启动多个后端进程指向同一个 `storage/qdrant`。

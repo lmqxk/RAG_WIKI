@@ -11,9 +11,11 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import sys
+import sysconfig
 import time
 import warnings
 from pathlib import Path
@@ -23,6 +25,24 @@ import fitz
 from backend.chunking import build_chunks
 from backend.config import Settings
 from backend.parser import MinerUParser
+
+
+_NVIDIA_DLL_DIRECTORIES: list[object] = []
+
+
+def prepare_paddle_gpu_runtime() -> None:
+    """注册 pip CUDA wheel 自带 DLL 目录，必须在导入 paddleocr 前调用。"""
+    if _NVIDIA_DLL_DIRECTORIES or not hasattr(os, "add_dll_directory"):
+        return
+    site_packages = Path(sysconfig.get_paths()["purelib"])
+    dll_directories = [site_packages / "torch" / "lib"]
+    dll_directories.extend(sorted((site_packages / "nvidia").glob("*/bin")))
+    for directory in dll_directories:
+        if directory.is_dir():
+            _NVIDIA_DLL_DIRECTORIES.append(os.add_dll_directory(str(directory)))
+    torch_shm = site_packages / "torch" / "lib" / "shm.dll"
+    if torch_shm.exists():
+        _NVIDIA_DLL_DIRECTORIES.append(ctypes.WinDLL(str(torch_shm)))
 
 # ---------------------------------------------------------------------------
 # 工具函数
@@ -59,7 +79,8 @@ def _init_paddlevl_ppstructure() -> object | None:
     """
     try:
         # 尝试 CPU 模式（GPU DLL 缺失时自动感知）
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+        prepare_paddle_gpu_runtime()
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
         warnings.filterwarnings("ignore")
         from paddleocr import PPStructureV3
 
@@ -93,7 +114,8 @@ def _init_paddlevl_table_pipeline() -> object | None:
     返回 TableRecognitionPipelineV2 实例，不可用则返回 None。
     """
     try:
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+        prepare_paddle_gpu_runtime()
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
         warnings.filterwarnings("ignore")
         from paddleocr import TableRecognitionPipelineV2
 
@@ -119,13 +141,13 @@ def _init_paddlevl_ocrvl() -> object | None:
     返回 PaddleOCRVL 实例，不可用则返回 None。
     """
     try:
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+        prepare_paddle_gpu_runtime()
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
         warnings.filterwarnings("ignore")
         from paddleocr import PaddleOCRVL
 
         engine = PaddleOCRVL(
             use_layout_detection=True,
-            lang="ch",
         )
         return engine
     except OSError as exc:

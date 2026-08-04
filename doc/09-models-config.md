@@ -36,7 +36,7 @@
 
 ## 回答生成
 
-`ChatProvider` 会把检索证据整理成编号证据，并调用兼容 OpenAI 协议的 `/chat/completions` 接口。
+`ChatProvider` 会把检索资料整理成带编号的资料包，并调用兼容 OpenAI 协议的 `/chat/completions` 接口。
 
 请求格式：
 
@@ -44,7 +44,7 @@
 {
   "model": "jewelzufo/MiniCPM5-1B",
   "temperature": 0.1,
-  "max_tokens": 1024,
+  "max_tokens": 2048,
   "think": false,
   "messages": [
     {"role": "system", "content": "系统提示词"},
@@ -72,6 +72,43 @@
 - 事实类问题返回最相关原文依据
 - 对比类问题按文档分组展示证据
 
+## 对比资料包
+
+普通问题传给 LLM 的资料是编号列表。对比类问题会使用按文档分组的资料包：
+
+```json
+{
+  "topic": "对比 GB55037-2022 和 GB50016-2014 的防火间距差异",
+  "mode": "cross_document_comparison",
+  "documents": [
+    {
+      "document_id": "new",
+      "document": "建筑防火通用规范",
+      "standard_no": "GB55037-2022",
+      "version": "2022",
+      "items": [
+        {
+          "id": 1,
+          "location": {"clause_no": "3.1.1", "pdf_page": 12},
+          "type": "规范正文",
+          "text": "..."
+        }
+      ]
+    }
+  ]
+}
+```
+
+其中 `id` 仍然对应前端引用编号，例如 `[1]`、`[2]`。分组只是为了让模型更稳定地区分不同规范，避免把新旧文档混成一段回答。
+
+模型提示词要求对比类回答优先包含：
+
+- 结论：是否有直接可比资料。
+- 对比要点：分别列出各文档适用对象、数值、条件和资料编号。
+- 资料不足：说明不能直接判断变严或放宽的原因。
+
+回答后端目前不再做正则清理，只保留首尾空白裁剪。内部图片路径会在传给 LLM 前替换为 `[图片见资料预览]`，避免模型直接输出存储路径。
+
 ## 向量化
 
 `EmbeddingProvider` 有两种模式：
@@ -97,6 +134,7 @@ Embedding 请求格式：
 
 - 配置外部重排接口时，调用外部服务
 - 未配置时，使用词项重合、精确匹配和正文优先规则排序
+- 外部重排接口不可用时，会自动回退到本地词项排序
 
 Rerank 请求格式：
 
@@ -110,6 +148,71 @@ Rerank 请求格式：
 }
 ```
 
+### 本地 Jina Reranker
+
+当前可使用 `jinaai/jina-reranker-v3.5` 作为本地重排模型。模型文件来自 ModelScope，默认目录：
+
+```text
+.models/modelscope/models/jinaai--jina-reranker-v3.5/snapshots/master
+```
+
+启用配置：
+
+```dotenv
+RAG_RERANK_BASE_URL=http://127.0.0.1:8011/rerank
+RAG_RERANK_API_KEY=local
+RAG_RERANK_MODEL=jina-reranker-v3.5
+RAG_LOCAL_RERANK_DEVICE=auto
+```
+
+当 `RAG_RERANK_BASE_URL` 指向本地 `/rerank` 时，`start.cmd` 会自动启动本地 rerank 服务。该服务独立于主后端，第一次请求时懒加载模型，`auto` 设备策略会优先 GPU，失败后降级 CPU。
+
+本地 rerank 服务采用单例模型工厂：
+
+- 模型只在第一次 `/rerank` 请求时加载。
+- 并发请求会通过加载锁避免重复加载模型。
+- 推理阶段会串行进入模型，避免 Agentic 多步骤并行检索时同时打爆同一个本地 GPU 模型。
+- 如果 GPU 推理失败，会尝试降级到 CPU。
+
+Jina 模型加载时可能出现 `lm_head.weight` 未初始化提示。只要 `/rerank` 返回 `200 OK` 且排序结果正常，该提示不等于服务不可用；真正需要处理的是 `/rerank` 返回 `500`、连接失败或排序耗时异常。
+
+## Agentic Planner LLM
+
+Agentic 检索的规划层复用回答模型配置：
+
+- `RAG_OPENAI_BASE_URL`
+- `RAG_OPENAI_API_KEY`
+- `RAG_CHAT_MODEL`
+
+Planner LLM 只负责输出 JSON 检索计划，不直接生成最终回答。代码会用 Pydantic 校验 JSON，限制工具名和文档引用，避免模型随意调用不存在的工具。规划不可用时会回退到本地规则计划，所以系统仍能完成基础检索。
+
+当前默认开启：
+
+```text
+agentic_retrieval_enabled = true
+agentic_planner_llm_enabled = true
+agentic_parallel_workers = 4
+```
+
+这部分默认值放在 `backend/src/backend/config.py`，`.env` 只建议放密钥、接口地址和临时覆盖项。
+
+## 流式回答与日志
+
+问答接口优先使用 `/api/chat/stream` 流式返回。后端会记录每次问答的性能日志：
+
+```text
+storage/logs/chat-metrics.jsonl
+```
+
+主要字段：
+
+- `retrieval_ms`：检索和资料组织耗时。
+- `first_token_ms`：首个回答 token 返回时间。
+- `total_ms`：完整请求耗时。
+- `answer_chars`：最终回答字符数。
+- `citations`：返回资料数量。
+- `query_type`：问题类型，例如 `comparison`。
+
 ## Ollama 本地模型
 
 本地 Ollama 可通过 OpenAI-compatible endpoint 接入：
@@ -118,7 +221,7 @@ Rerank 请求格式：
 RAG_OPENAI_BASE_URL=http://127.0.0.1:11434/v1
 RAG_OPENAI_API_KEY=ollama-local
 RAG_CHAT_MODEL=jewelzufo/MiniCPM5-1B
-RAG_CHAT_MAX_TOKENS=1024
+RAG_CHAT_MAX_TOKENS=2048
 RAG_CHAT_THINK=false
 ```
 

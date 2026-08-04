@@ -66,7 +66,10 @@ backend\.venv\Scripts\python.exe scripts\run.py
 ```text
 后端: http://127.0.0.1:8000
 前端: http://localhost:3000
+本地重排: http://127.0.0.1:8011/rerank（仅当 RAG_RERANK_BASE_URL 指向本地 /rerank 时）
 ```
+
+本地重排服务是独立进程。它会在第一次收到 `/rerank` 请求时懒加载 `jina-reranker-v3.5`，优先使用 GPU，GPU 加载或推理失败时降级 CPU。即使本地重排不可用，主后端也会回退到本地词项排序，不会阻断问答。
 
 它使用的 Node 和 npm-cli 也不是系统全局环境，而是项目/运行时内置路径：
 

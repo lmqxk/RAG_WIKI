@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from .config import Settings
 from .domain import SearchHit
@@ -14,6 +15,14 @@ from .vector_index import VectorIndex
 
 CLAUSE_QUERY_RE = re.compile(r"(?<!\d)(\d+(?:\.\d+){2,5})(?!\d)")
 COMPARISON_WORDS = ("对比", "比较", "区别", "差异", "变化", "新旧", "新版", "旧版")
+STANDARD_NO_RE = re.compile(r"[A-Z]{1,4}\s*\d{4,6}(?:[-—]\d{4})?", re.IGNORECASE)
+
+
+@dataclass(slots=True)
+class QueryPlan:
+    kind: str
+    search_question: str
+    target_document_ids: list[str] | None = None
 
 
 def query_type(question: str) -> str:
@@ -48,6 +57,84 @@ def focused_query(question: str, kind: str) -> str:
     if "附设" in focused and "建筑内" not in focused:
         focused = focused.replace("附设", "附设在建筑内的", 1)
     return focused or question
+
+
+def normalize_identifier(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def documents_for_comparison(
+    question: str,
+    documents: Sequence[dict[str, object]],
+) -> list[str]:
+    ready_documents = [document for document in documents if document.get("status") == "READY"]
+    if not ready_documents:
+        return []
+
+    normalized_question = normalize_identifier(question)
+    mentioned: list[str] = []
+    for document in ready_documents:
+        identifiers = [
+            document.get("standard_no"),
+            document.get("title"),
+            document.get("filename"),
+        ]
+        if document.get("version"):
+            identifiers.append(document.get("version"))
+        if any(
+            identifier
+            and len(normalize_identifier(identifier)) >= 4
+            and normalize_identifier(identifier) in normalized_question
+            for identifier in identifiers
+        ):
+            mentioned.append(str(document["id"]))
+
+    standard_numbers = {
+        normalize_identifier(match.group(0)) for match in STANDARD_NO_RE.finditer(question)
+    }
+    if standard_numbers:
+        for document in ready_documents:
+            standard_no = normalize_identifier(document.get("standard_no"))
+            if standard_no and any(
+                standard_no.startswith(number) or number.startswith(standard_no)
+                for number in standard_numbers
+            ):
+                document_id = str(document["id"])
+                if document_id not in mentioned:
+                    mentioned.append(document_id)
+
+    if len(mentioned) >= 2:
+        return mentioned
+    if any(word in question for word in ("新旧", "新版", "旧版", "新规范", "旧规范")):
+        by_title = sorted(
+            ready_documents,
+            key=lambda document: (
+                str(document.get("title") or ""),
+                str(document.get("version") or ""),
+                str(document.get("standard_no") or ""),
+            ),
+            reverse=True,
+        )
+        return [str(document["id"]) for document in by_title[:4]]
+    return mentioned
+
+
+def plan_query(
+    question: str,
+    document_ids: Sequence[str] | None,
+    documents: Sequence[dict[str, object]] = (),
+) -> QueryPlan:
+    kind = query_type(question)
+    search_question = focused_query(question, kind)
+    target_document_ids = list(document_ids) if document_ids else None
+    if kind == "comparison" and not target_document_ids:
+        planned_ids = documents_for_comparison(question, documents)
+        target_document_ids = planned_ids if planned_ids else None
+    return QueryPlan(
+        kind=kind,
+        search_question=search_question,
+        target_document_ids=target_document_ids,
+    )
 
 
 def reciprocal_rank_fusion(
@@ -85,26 +172,31 @@ class HybridRetriever:
         question: str,
         document_ids: Sequence[str] | None,
     ) -> tuple[str, list[SearchHit]]:
-        kind = query_type(question)
-        search_question = focused_query(question, kind)
-        if kind == "comparison" and document_ids and len(document_ids) > 1:
+        plan = plan_query(question, document_ids, self.repository.list_documents())
+        if (
+            plan.kind == "comparison"
+            and plan.target_document_ids
+            and len(plan.target_document_ids) > 1
+        ):
             per_document = [
-                self._retrieve_scope(search_question, [document_id])
-                for document_id in document_ids
+                self._retrieve_scope(plan.search_question, [document_id])
+                for document_id in plan.target_document_ids
             ]
             final = self._balance_documents(
                 [hit for document_hits in per_document for hit in document_hits]
             )
-            return kind, final
-        final = self._retrieve_scope(search_question, document_ids)
-        if kind == "comparison":
+            return plan.kind, final
+        final = self._retrieve_scope(plan.search_question, plan.target_document_ids)
+        if plan.kind == "comparison":
             final = self._balance_documents(final)
-        return kind, final
+        return plan.kind, final
 
     def _retrieve_scope(
         self,
         question: str,
         document_ids: Sequence[str] | None,
+        *,
+        rerank: bool = True,
     ) -> list[SearchHit]:
         bm25 = self.repository.bm25_search(
             question,
@@ -134,6 +226,8 @@ class HybridRetriever:
             )
             ranked_lists.insert(0, exact)
         fused = reciprocal_rank_fusion(ranked_lists)[: self.settings.retrieval_fused_top_k]
+        if not rerank:
+            return fused
         final = self.reranker.rerank(
             question,
             fused,

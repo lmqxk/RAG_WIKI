@@ -1,5 +1,11 @@
 from backend.domain import SearchHit
-from backend.retrieval import focused_query, query_type, reciprocal_rank_fusion
+from backend.retrieval import (
+    documents_for_comparison,
+    focused_query,
+    plan_query,
+    query_type,
+    reciprocal_rank_fusion,
+)
 
 
 def make_hit(chunk_id: str) -> SearchHit:
@@ -36,6 +42,54 @@ def test_focused_query_removes_document_titles_and_comparison_noise() -> None:
     assert "对比" not in focused
     assert "锅炉房" in focused
     assert "防火分隔" in focused
+
+
+def test_plan_query_targets_mentioned_ready_documents_for_comparison() -> None:
+    documents = [
+        {
+            "id": "new",
+            "title": "建筑防火通用规范",
+            "filename": "GB55037-2022.pdf",
+            "standard_no": "GB55037-2022",
+            "version": "2022",
+            "status": "READY",
+        },
+        {
+            "id": "old",
+            "title": "建筑设计防火规范",
+            "filename": "GB50016-2014.pdf",
+            "standard_no": "GB50016-2014",
+            "version": "2018",
+            "status": "READY",
+        },
+        {
+            "id": "failed",
+            "title": "未完成规范",
+            "filename": "failed.pdf",
+            "standard_no": "GB99999-2020",
+            "version": "2020",
+            "status": "FAILED",
+        },
+    ]
+
+    plan = plan_query("对比 GB55037-2022 和 GB50016-2014 的防火间距差异", None, documents)
+
+    assert plan.kind == "comparison"
+    assert plan.search_question == "GB55037-2022 GB50016-2014 的防火间距"
+    assert plan.target_document_ids == ["new", "old"]
+
+
+def test_documents_for_comparison_falls_back_to_ready_documents_for_new_old_query() -> None:
+    documents = [
+        {"id": "draft", "title": "草稿", "version": "2020", "status": "FAILED"},
+        {"id": "old", "title": "规范", "version": "2018", "status": "READY"},
+        {"id": "new", "title": "规范", "version": "2022", "status": "READY"},
+    ]
+
+    assert documents_for_comparison("新旧规范防火间距有什么变化", documents) == [
+        "new",
+        "old",
+    ]
 
 
 def test_rrf_rewards_hits_in_multiple_lists() -> None:

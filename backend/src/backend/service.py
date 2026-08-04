@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import IntegrityError
 from urllib.parse import quote
@@ -12,16 +13,29 @@ from uuid import uuid4
 
 from fastapi import UploadFile
 
+from .agent import AgenticRetriever
 from .config import Settings
+from .domain import SearchHit
 from .ingestion import IngestionManager
 from .providers import ChatProvider
 from .repository import Repository
-from .retrieval import HybridRetriever
 from .schemas import ChatResponse, Citation
 
 STANDARD_RE = re.compile(r"(?i)\b((?:GB|JGJ|CJJ|DL|NB|JT|DB|Q)[/\s-]*T?[\s-]*\d{3,8}(?:-\d{4})?)\b")
 VERSION_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?:\s*年|\s*版)?")
 HTML_IMAGE_RE = re.compile(r"""<img[^>]+src=["']([^"']+)["']""", re.IGNORECASE)
+
+
+@dataclass(slots=True)
+class ChatContext:
+    trace_id: str
+    question: str
+    query_type: str
+    hits: list[SearchHit]
+    citations: list[Citation]
+    evidence_status: str
+    used_external_llm: bool
+    retrieval_timings: dict[str, float | None]
 
 
 def infer_metadata(filename: str) -> tuple[str, str | None, str | None]:
@@ -264,7 +278,7 @@ class RagService:
         settings: Settings,
         repository: Repository,
         ingestion: IngestionManager,
-        retriever: HybridRetriever,
+        retriever: AgenticRetriever,
         chat_provider: ChatProvider,
     ) -> None:
         self.settings = settings
@@ -406,8 +420,19 @@ class RagService:
         question: str,
         document_ids: list[str] | None,
     ) -> ChatResponse:
+        context = self.chat_context(question, document_ids)
+        answer = self.chat_provider.answer(question, context.hits, context.query_type).strip()
+        return self.chat_response_from_context(context, answer)
+
+    def chat_context(
+        self,
+        question: str,
+        document_ids: list[str] | None,
+    ) -> ChatContext:
         trace_id = str(uuid4())
-        kind, hits = self.retriever.retrieve(question, document_ids)
+        agent_run = self.retriever.run(question, document_ids)
+        kind = agent_run.kind
+        hits = agent_run.hits
         documents = {
             hit.document_id: self.repository.get_document(hit.document_id)
             for hit in hits[: self.settings.answer_max_citations]
@@ -419,7 +444,6 @@ class RagService:
                 1,
             )
         ]
-        answer = self.chat_provider.answer(question, hits, kind).strip()
         document_count = len({citation.document_id for citation in citations})
         if not citations:
             evidence_status = "insufficient"
@@ -427,13 +451,33 @@ class RagService:
             evidence_status = "partial"
         else:
             evidence_status = "sufficient"
-        return ChatResponse(
-            answer=answer,
+        return ChatContext(
+            trace_id=trace_id,
+            question=question,
+            query_type=kind,
+            hits=hits,
             citations=citations,
             evidence_status=evidence_status,
-            query_type=kind,
             used_external_llm=self.chat_provider.external,
-            trace_id=trace_id,
+            retrieval_timings={
+                "planner_ms": agent_run.planner_ms,
+                "recall_ms": agent_run.recall_ms,
+                "rerank_ms": agent_run.rerank_ms,
+            },
+        )
+
+    def chat_response_from_context(
+        self,
+        context: ChatContext,
+        answer: str,
+    ) -> ChatResponse:
+        return ChatResponse(
+            answer=answer,
+            citations=context.citations,
+            evidence_status=context.evidence_status,
+            query_type=context.query_type,
+            used_external_llm=context.used_external_llm,
+            trace_id=context.trace_id,
         )
 
     def _citation(
