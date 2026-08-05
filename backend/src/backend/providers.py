@@ -14,6 +14,7 @@ import httpx
 
 from .config import Settings
 from .domain import SearchHit
+from .prompt import ANSWER_SYSTEM_PROMPT
 from .torch_runtime import prepare_torch_runtime
 
 prepare_torch_runtime()
@@ -396,22 +397,7 @@ class ChatProvider:
     ) -> dict[str, object]:
         assert self.settings.chat_model
         evidence = json.dumps(evidence_payload(question, hits, query_type), ensure_ascii=False)
-        system = (
-            "你是规范与技术文档问答助手。只能依据给定资料回答，禁止使用未提供的常识补充。"
-            "数值、单位、否定词和适用条件必须严格核对。综合或版本对比问题必须分别陈述各文档，"
-            "明确相同点、变化和适用范围。每个关键结论后用实际资料编号标注，例如 [1]、[2]。"
-            "如果资料是表格、长列表或整段条款，先根据用户问题筛选最相关的行、列、单元格或条件，"
-            "只总结这些相关内容；不要把整张表、整段资料或不相关行逐项复述到回答里。"
-            "回答不要过度压缩：先给直接结论，再补充适用对象、关键数值、条件差异或资料不足之处。"
-            "通常用 3 到 6 句回答；复杂对比可以用少量要点，可以指出对应条款。"
-            "跨文档对比问题要先判断资料是否直接可比；如果适用对象、条件或条款层级不同，"
-            "必须明确说“不能直接判断变严或放宽”，再分别列出各文档规定。"
-            "对比回答优先使用：结论、对比要点、资料不足 三段结构。"
-            "如果资料包含图片、图示、截面图或图片预览，不要说“无法展示图片”“无法在此呈现”等话；"
-            "应直接说明“具体参考资料预览中的图示”或“具体参考对应图示”，并继续归纳图示对应的文字、构造、尺寸和条件。"
-            "不要输出独立的参考文献列表、参考资料、引用列表或原文摘录清单。"
-            "不要输出资料 JSON、字段名或原文块；最终只输出面向用户的归纳答案。"
-        )
+        system = ANSWER_SYSTEM_PROMPT
         payload: dict[str, object] = {
             "model": self.settings.chat_model,
             "temperature": 0.1,

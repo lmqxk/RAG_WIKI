@@ -8,6 +8,8 @@
 [![Qdrant](https://img.shields.io/badge/Qdrant-Local-DC244C?logo=qdrant&logoColor=white)](https://qdrant.tech/)
 [![SQLite](https://img.shields.io/badge/SQLite-FTS5-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![Ollama](https://img.shields.io/badge/Ollama-Local_LLM-000000?logo=ollama&logoColor=white)](https://ollama.com/)
+[![Embedding](https://img.shields.io/badge/Embedding-BGE--small--zh--v1.5-8A2BE2)](https://huggingface.co/BAAI/bge-small-zh-v1.5)
+[![Reranker](https://img.shields.io/badge/Reranker-Jina--reranker--v3.5-F59E0B)](https://huggingface.co/jinaai/jina-reranker-v3.5)
 
 ## 概述
 
@@ -45,13 +47,17 @@ flowchart LR
     I --> P[PDF 解析与结构识别]
     P --> C[章节与条款切分]
     C --> S[(SQLite FTS5)]
-    C --> Q[(Qdrant)]
+    C --> V[Embedding：BGE-small-zh-v1.5]
+    V --> Q[(Qdrant 向量索引)]
 
-    R --> P2[轻量查询规划]
-    P2 --> S
-    P2 --> Q
-    R --> E[证据融合与排序]
-    E --> G
+    R --> P2[Agent Planner LLM]
+    P2 --> P3[多维 Query 改写与检索计划]
+    P3 --> S
+    P3 --> Q
+    S --> E[BM25 + 向量召回 + RRF 融合]
+    Q --> E
+    E --> RR[Jina Reranker v3.5]
+    RR --> G
     G --> O[Ollama / OpenAI 兼容模型]
     G --> X[回答与原文引用]
     X --> W
@@ -64,8 +70,9 @@ PDF 上传
   → PDF-Extract-Kit 全量文档解析
   → 章节、条款、表格、图片位置和页码结构化
   → 文本块切分
-  → 全文索引与向量索引
-  → 查询规划、分文档召回与结果融合
+  → BM25 全文索引与 BGE 向量索引
+  → Agent Planner 生成多维检索计划
+  → 并行召回、RRF 融合与 Jina 重排序
   → 大模型依据资料生成回答
   → 引用回链 PDF 原页
 ```

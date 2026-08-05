@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .config import Settings
 from .domain import SearchHit
 from .repository import Repository
+from .prompt import PLANNER_SYSTEM_PROMPT
 from .retrieval import (
     HybridRetriever,
     QueryPlan,
@@ -26,28 +27,6 @@ from .retrieval import (
 )
 
 ALLOWED_TOOLS = {"search_general", "search_in_document"}
-PLANNER_SYSTEM_PROMPT = """
-你是专业规范与技术文档检索规划助手。你的任务不是回答问题，而是为 RAG 系统制定可执行的检索计划。
-
-绝对遵守以下规则：
-1. 只输出 JSON，不要输出 Markdown、解释或多余文本。
-2. 严禁使用固定模板拼接 Query。必须根据用户问题、可用文档和专业语义，自主生成最合适的检索语句。
-3. query_rewrites 必须覆盖不同信息维度，不能只是同一句话换词。
-4. 复杂问题、对比问题、资料不足风险高的问题，应生成多条 query_rewrites 和多个 steps。
-5. 只能使用工具：search_general、search_in_document。
-6. search_in_document 的 document_ref 必须来自 allowed_docs，
-   可使用 id、standard_no、title 或 filename。
-7. 不要编造 allowed_docs 之外的文档。
-8. 每条 step.query 长度不超过 120 字。
-9. 如果用户指定了文档范围，不得越过该范围检索。
-
-规划思路：
-1. 判断意图：comparison、single_query 或 exploration。
-2. 识别问题涉及的规范、版本、对象、条件和指标。
-3. 拆解多个信息维度，例如适用范围、术语定义、技术指标、构造要求、例外条件、版本差异。
-4. 为每个关键维度生成自然、具体、可检索的 query。
-5. 对比问题优先使用 search_in_document 分别检索各目标文档。
-"""
 
 
 AllowedTool = Literal["search_general", "search_in_document"]
