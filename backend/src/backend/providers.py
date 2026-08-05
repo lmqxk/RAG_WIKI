@@ -8,11 +8,15 @@ import math
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
+from threading import Lock
 
 import httpx
 
 from .config import Settings
 from .domain import SearchHit
+from .torch_runtime import prepare_torch_runtime
+
+prepare_torch_runtime()
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*|[\u3400-\u9fff]")
 ASCII_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*")
@@ -87,14 +91,120 @@ def evidence_payload(question: str, hits: list[SearchHit], query_type: str) -> o
 class EmbeddingProvider:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.external = bool(settings.openai_api_key and settings.embedding_model)
+        self.backend = settings.embedding_backend.strip().lower()
+        self._model = None
+        self._tokenizer = None
+        self._device: str | None = None
+        self._model_lock = Lock()
+
+    @property
+    def semantic(self) -> bool:
+        return self.backend == "local" and self.local_available or self.external
+
+    @property
+    def external(self) -> bool:
+        return (
+            self.backend == "openai"
+            and bool(self.settings.openai_api_key and self.settings.embedding_model)
+        )
+
+    @property
+    def local_available(self) -> bool:
+        return self.settings.local_embedding_model_dir.is_dir()
+
+    @property
+    def configured(self) -> bool:
+        return self.semantic
+
+    def warmup(self) -> None:
+        """加载本地模型并完成一次最小推理，避免首个真实请求承担冷启动。"""
+        if self.backend == "local" and self.local_available:
+            self.embed(["系统启动预热"])
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         if self.external:
             return self._external_embed(texts)
+        if self.backend == "local":
+            if not self.local_available:
+                raise RuntimeError(
+                    "本地 Embedding 模型未下载："
+                    f"{self.settings.local_embedding_model_dir}"
+                )
+            return self._local_embed(texts)
         return [self._hash_embed(text) for text in texts]
+
+    def _local_embed(self, texts: list[str]) -> list[list[float]]:
+        model, tokenizer, device, torch = self._load_local_model()
+        vectors: list[list[float]] = []
+        batch_size = max(1, self.settings.embedding_batch_size)
+        try:
+            for start in range(0, len(texts), batch_size):
+                encoded = tokenizer(
+                    texts[start : start + batch_size],
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="pt",
+                )
+                encoded = {name: value.to(device) for name, value in encoded.items()}
+                with torch.inference_mode():
+                    hidden = model(**encoded).last_hidden_state
+                    mask = encoded["attention_mask"].unsqueeze(-1).to(hidden.dtype)
+                    pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
+                    normalized = torch.nn.functional.normalize(pooled, p=2, dim=1)
+                vectors.extend(normalized.cpu().tolist())
+        except Exception:
+            if device != "cuda":
+                raise
+            self._clear_local_model()
+            model, tokenizer, device, torch = self._load_local_model(force_device="cpu")
+            return self._local_embed(texts)
+        if any(len(vector) != self.settings.embedding_dimension for vector in vectors):
+            raise ValueError("本地 Embedding 维度与 RAG_EMBEDDING_DIMENSION 不一致")
+        return vectors
+
+    def _load_local_model(self, force_device: str | None = None):
+        with self._model_lock:
+            prepare_torch_runtime()
+            import torch
+            from transformers import AutoModel, AutoTokenizer
+
+            if self._model is not None and self._tokenizer is not None and self._device:
+                return self._model, self._tokenizer, self._device, torch
+            configured_device = (force_device or self.settings.local_embedding_device).lower()
+            candidates = (
+                ["cuda", "cpu"]
+                if configured_device == "auto" and torch.cuda.is_available()
+                else [configured_device]
+            )
+            errors: list[str] = []
+            for device in candidates:
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        self.settings.local_embedding_model_dir,
+                        local_files_only=True,
+                    )
+                    model = AutoModel.from_pretrained(
+                        self.settings.local_embedding_model_dir,
+                        local_files_only=True,
+                    )
+                    model.eval()
+                    model.to(device)
+                    self._model = model
+                    self._tokenizer = tokenizer
+                    self._device = device
+                    return model, tokenizer, device, torch
+                except Exception as exc:
+                    errors.append(f"{device}: {exc}")
+            raise RuntimeError("本地 Embedding 模型加载失败：" + " | ".join(errors))
+
+    def _clear_local_model(self) -> None:
+        with self._model_lock:
+            self._model = None
+            self._tokenizer = None
+            self._device = None
 
     def _external_embed(self, texts: list[str]) -> list[list[float]]:
         assert self.settings.openai_api_key

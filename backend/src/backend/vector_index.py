@@ -10,17 +10,15 @@ from .config import Settings
 from .domain import Chunk
 from .providers import EmbeddingProvider
 
-COLLECTION_NAME = "document_chunks"
-
-
 class VectorIndex:
     def __init__(self, settings: Settings, embeddings: EmbeddingProvider) -> None:
         self.settings = settings
         self.embeddings = embeddings
+        self.collection_name = settings.embedding_collection_name
         self.client = QdrantClient(path=str(settings.qdrant_path))
-        if not self.client.collection_exists(COLLECTION_NAME):
+        if not self.client.collection_exists(self.collection_name):
             self.client.create_collection(
-                collection_name=COLLECTION_NAME,
+                collection_name=self.collection_name,
                 vectors_config=models.VectorParams(
                     size=settings.embedding_dimension,
                     distance=models.Distance.COSINE,
@@ -29,7 +27,7 @@ class VectorIndex:
 
     def replace_document(self, document_id: str, chunks: Sequence[Chunk]) -> None:
         self.client.delete(
-            collection_name=COLLECTION_NAME,
+            collection_name=self.collection_name,
             points_selector=models.FilterSelector(
                 filter=models.Filter(
                     must=[
@@ -58,7 +56,7 @@ class VectorIndex:
                 ]
             )
             self.client.upsert(
-                collection_name=COLLECTION_NAME,
+                collection_name=self.collection_name,
                 points=[
                     models.PointStruct(
                         id=chunk.id,
@@ -88,7 +86,7 @@ class VectorIndex:
                 ]
             )
         response = self.client.query_points(
-            collection_name=COLLECTION_NAME,
+            collection_name=self.collection_name,
             query=self.embeddings.embed([query])[0],
             query_filter=query_filter,
             limit=limit,

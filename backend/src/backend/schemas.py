@@ -85,6 +85,8 @@ class HealthOut(BaseModel):
     version: str
     llm_configured: bool
     embedding_configured: bool
+    embedding_backend: str
+    embedding_model: str | None
     parser_available: bool
     mineru_available: bool
     rapidocr_available: bool

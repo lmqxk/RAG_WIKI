@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import signal
 import subprocess
 import sys
@@ -44,6 +45,31 @@ def wait_for(url: str, timeout: float = 30) -> bool:
         except OSError:
             time.sleep(0.4)
     return False
+
+
+def warmup_rerank(settings) -> bool:
+    if not settings.local_rerank_warmup_on_start:
+        return True
+    url = f"http://{settings.local_rerank_host}:{settings.local_rerank_port}/rerank"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(
+            {
+                "model": settings.rerank_model or "jina-reranker-v3.5",
+                "query": "系统启动预热",
+                "documents": ["系统启动预热资料"],
+                "top_n": 1,
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer local"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return 200 <= response.status < 300
+    except OSError as exc:
+        print(f"Rerank 预热失败，将在首次请求时重试：{exc}")
+        return False
 
 
 def main() -> int:
@@ -118,6 +144,8 @@ def main() -> int:
                 f"http://{settings.local_rerank_host}:{settings.local_rerank_port}/health",
                 timeout=20,
             )
+            if rerank_ready:
+                warmup_rerank(settings)
         api_ready = wait_for("http://127.0.0.1:8000/api/health")
         web_ready = wait_for("http://127.0.0.1:3000/")
         if api_ready and web_ready:

@@ -24,13 +24,13 @@
 - 支持 100 MB、600 页以内的文本型或扫描型 PDF。
 - 默认通过 OpenDataLab PDF-Extract-Kit 管线解析 PDF，优先保留表格、图片、章节、条款和页码结构。
 - 条款、章节、正文、表格、图片位置、PDF 页码和纸面页码结构化。
-- SQLite FTS5 BM25 + Qdrant Local 向量召回 + RRF + Rerank。
+- SQLite FTS5 BM25 + 本地 BGE 中文向量召回 + Qdrant Local + RRF + Jina Rerank。
 - 单文档问答、跨文档综合回答和新旧规范对比。
 - 对比类问题带轻量 Agentic 编排：Planner LLM 自动拆解多维度检索计划，并行检索后按文档组织资料包。
 - 流式回答接口记录检索耗时、首 token 时间和总耗时，方便持续调优。
 - 回答末尾附引用，引用卡片可跳转到 PDF 原页。
 - 区分规范正文与条文说明，确定性结论优先规范正文。
-- 未配置外部模型时使用离线证据模式，系统仍可完成检索和原文引用。
+- BGE 模型未下载时，系统仍可通过 BM25 完成检索和原文引用；下载模型后执行 `reindex` 启用语义向量召回。
 
 ## 项目架构
 
@@ -292,5 +292,6 @@ $node = "C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\no
 
 - 当前无登录、多租户和批量上传。
 - Qdrant Local 适用于初期少量规范；规模扩大后应迁移为独立 Qdrant 服务。
-- 未配置外部 Embedding 时使用确定性哈希向量，主要依靠 BM25 和条款精确匹配；正式效果测试应配置中文 Embedding 与 Reranker。
+- 默认本地 Embedding 为 `BAAI/bge-small-zh-v1.5`；模型下载后需重启后端并对已有资料执行 `reindex`。哈希向量仅作为显式调试后端保留。
+- 服务启动阶段会分别预热 BGE 和 Jina，消除第一条问答的模型冷启动等待；显存紧张时可在 `config.py` 中关闭对应预热开关。
 - 条件判断、合规和法律问题只提供文档依据，不替代专业审查或法律意见。

@@ -215,7 +215,7 @@ class HybridRetriever:
             hit.source = "dense"
 
         ranked_lists: list[list[SearchHit]] = [bm25, dense]
-        if not self.vector_index.embeddings.external:
+        if not self.vector_index.embeddings.semantic:
             # 离线哈希向量只用于补召回，BM25 对精确技术术语更可靠。
             ranked_lists.insert(0, bm25)
         clause_match = CLAUSE_QUERY_RE.search(question)

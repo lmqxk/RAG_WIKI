@@ -111,12 +111,35 @@
 
 ## 向量化
 
-`EmbeddingProvider` 有两种模式：
+`EmbeddingProvider` 有三种模式：
 
-- 配置外部 Embedding 时，调用 `/embeddings`
-- 未配置时，使用本地哈希向量，保证系统能离线跑通
+- 默认本地模式加载 `BAAI/bge-small-zh-v1.5`，在 API 进程内按需加载，GPU 优先、失败回退 CPU。
+- 配置 `RAG_EMBEDDING_BACKEND=openai` 时，调用 `/embeddings`。
+- 配置 `RAG_EMBEDDING_BACKEND=hash` 时，使用确定性哈希向量，仅用于离线调试。
 
-正式效果测试建议配置中文 Embedding 模型，否则语义召回质量有限。
+本地模型目录默认是 `.models/modelscope/models/BAAI--bge-small-zh-v1.5`，可用以下命令下载：
+
+```powershell
+modelscope download --model BAAI/bge-small-zh-v1.5 `
+  --local_dir E:\lmq\RAG_ZB\.models\modelscope\models\BAAI--bge-small-zh-v1.5
+```
+
+该模型输出 512 维向量。系统使用独立集合 `document_chunks_bge_small_zh_v1_5`，保留旧 384 维哈希集合，下载模型并重启后需要对已有文档执行 `reindex`。
+
+### 启动预热
+
+默认启动时会执行一次最小推理：
+
+- API lifespan 初始化完成后预热 BGE。
+- Rerank 服务健康检查通过后预热 Jina。
+- 预热失败只记录警告，服务仍会启动，并在真实请求时再次尝试。
+
+显存紧张或希望缩短启动时间时，可在 `config.py` 中关闭：
+
+```python
+embedding_warmup_on_start = False
+local_rerank_warmup_on_start = False
+```
 
 Embedding 请求格式：
 
@@ -186,6 +209,12 @@ Agentic 检索的规划层复用回答模型配置：
 
 Planner LLM 只负责输出 JSON 检索计划，不直接生成最终回答。代码会用 Pydantic 校验 JSON，限制工具名和文档引用，避免模型随意调用不存在的工具。规划不可用时会回退到本地规则计划，所以系统仍能完成基础检索。
 
+### Token 配置实验结论
+
+当前实验表明，最终回答使用 `2048` token 时，跨文档对比和复杂资料归纳的完整性较好；降低到 `1024` token 容易在回答尚未完成时被截断。因此 `RAG_CHAT_MAX_TOKENS` 默认保持 `2048`。
+
+Planner 的输出是短 JSON 检索计划，后续应使用独立的 Planner token 配额，不应为了压缩 Planner 而降低最终回答的 token 上限。
+
 当前默认开启：
 
 ```text
@@ -231,5 +260,5 @@ RAG_CHAT_THINK=false
 
 - 修改 `.env`、密钥、token、API 地址前必须先确认。
 - 不要把真实密钥写入代码、README 或测试文件。
-- 更换 Embedding 维度后要同步处理 Qdrant 集合和历史索引。
+- 更换 Embedding 模型或维度后，必须使用新的 Qdrant 集合并对历史文档重新执行 `reindex`。
 - 本地小模型可以做功能联调，但正式回答质量需要用更强的中文模型评测。

@@ -4,7 +4,7 @@ import httpx
 
 from backend.config import Settings
 from backend.domain import SearchHit
-from backend.providers import ChatProvider, RerankProvider, evidence_payload
+from backend.providers import ChatProvider, EmbeddingProvider, RerankProvider, evidence_payload
 
 
 def make_hit(chunk_id: str, document_id: str, standard_no: str) -> SearchHit:
@@ -87,6 +87,15 @@ def test_chat_provider_stream_uses_extractive_answer_without_external_llm() -> N
 
     assert len(chunks) == 1
     assert "GB50016-2014" in chunks[0]
+
+
+def test_local_embedding_is_not_configured_until_model_is_downloaded(tmp_path) -> None:
+    provider = EmbeddingProvider(
+        Settings(local_embedding_model_dir=tmp_path / "missing-bge-model")
+    )
+
+    assert provider.backend == "local"
+    assert provider.configured is False
 
 
 def test_chat_provider_stream_ignores_reasoning_content(monkeypatch) -> None:

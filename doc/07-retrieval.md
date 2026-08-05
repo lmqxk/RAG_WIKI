@@ -59,7 +59,7 @@ score += 1 / (k + rank)
 
 多路结果通过 Reciprocal Rank Fusion 合并。这样可以让不同检索方式各自贡献高排名结果，避免单一路径漏召回。
 
-当未配置外部 Embedding 时，本地哈希向量只作为补召回，关键词检索权重更高。
+默认使用本地 `BAAI/bge-small-zh-v1.5` 生成 512 维中文语义向量；BM25 仍负责精确条文、编号和数值匹配。模型不可用时不会静默伪装成语义检索，健康接口会显示 Embedding 未就绪；只有显式设置 `embedding_backend=hash` 才使用哈希向量调试。
 
 ## 对比类问题
 

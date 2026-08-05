@@ -1,6 +1,6 @@
 ﻿<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1180" viewBox="0 0 1680 1180" role="img" aria-labelledby="title desc">
   <title id="title">规智库 RAG 当前技术架构图</title>
-  <desc id="desc">展示前端、后端 API、PDF-Extract-Kit 文档解析、索引存储、Agentic RAG 的 LLM JSON 规划、并行召回、一次全局 Jina 重排、流式回答及性能日志。</desc>
+  <desc id="desc">展示前端、后端 API、PDF-Extract-Kit 文档解析、本地 BGE 中文向量索引、Agentic RAG 的 LLM JSON 规划、并行召回、一次全局 Jina 重排、流式回答及性能日志。</desc>
   <defs>
     <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
       <path d="M2,2 L10,6 L2,10 Z" fill="#334155" />
@@ -32,7 +32,7 @@
 
   <rect x="0" y="0" width="1680" height="1180" fill="#f7f7f3" />
   <text x="60" y="54" class="title">规智库 RAG 当前技术架构图</text>
-  <text x="60" y="82" class="subtitle">当前默认：PDF-Extract-Kit 解析；共享 LLM 输出 JSON 检索计划和最终回答；多步骤并行召回后统一进行一次 Jina 重排。</text>
+  <text x="60" y="82" class="subtitle">当前默认：PDF-Extract-Kit 解析与 BGE 中文语义向量；共享 LLM 输出 JSON 检索计划和最终回答；多步骤并行召回后统一进行一次 Jina 重排。</text>
 
   <!-- Startup and config -->
   <rect x="60" y="110" width="360" height="185" class="cluster" />
@@ -84,9 +84,9 @@
   <text x="1275" y="212" class="text">Planner + Answer</text>
   <text x="1275" y="232" class="small">OpenAI 兼容接口</text>
   <rect x="1430" y="162" width="165" height="78" class="box-muted" />
-  <text x="1450" y="190" class="label">EmbeddingProvider</text>
-  <text x="1450" y="212" class="text">可选 embedding</text>
-  <text x="1450" y="232" class="small">未配置则本地退化</text>
+  <text x="1450" y="190" class="label">Local Embedding</text>
+  <text x="1450" y="212" class="text">BGE Small ZH v1.5</text>
+  <text x="1450" y="232" class="small">GPU 优先 / CPU 回退</text>
   <rect x="1255" y="252" width="340" height="30" class="note" />
   <text x="1271" y="272" class="small">真实 token 只放 .env，不写入代码仓库</text>
 
@@ -139,8 +139,8 @@
   <text x="1080" y="470" class="small">chunks / FTS5</text>
   <rect x="1250" y="400" width="160" height="82" class="box" />
   <text x="1270" y="428" class="label">Qdrant Local</text>
-  <text x="1270" y="450" class="text">document_chunks</text>
-  <text x="1270" y="470" class="small">向量索引</text>
+  <text x="1270" y="450" class="text">BGE 512 维集合</text>
+  <text x="1270" y="470" class="small">中文语义索引</text>
   <rect x="1440" y="400" width="150" height="82" class="box-muted" />
   <text x="1460" y="428" class="label">Parsed Files</text>
   <text x="1460" y="450" class="text">storage/parsed</text>
@@ -171,8 +171,8 @@
   <text x="490" y="835" class="small">ThreadPoolExecutor</text>
   <rect x="645" y="765" width="145" height="78" class="box" />
   <text x="665" y="793" class="label">Hybrid Recall</text>
-  <text x="665" y="815" class="text">BM25 + Vector</text>
-  <text x="665" y="835" class="small">FTS5 / Qdrant</text>
+  <text x="665" y="815" class="text">BM25 + BGE Vector</text>
+  <text x="665" y="835" class="small">FTS5 / Qdrant 512D</text>
   <rect x="820" y="765" width="145" height="78" class="box" />
   <text x="840" y="793" class="label">合并去重</text>
   <text x="840" y="815" class="text">RRF / exact match</text>
@@ -248,7 +248,7 @@
   <!-- config defaults legend -->
   <rect x="60" y="1085" width="1560" height="62" class="note" />
   <text x="82" y="1110" class="label">当前关键默认配置</text>
-  <text x="82" y="1134" class="mono">document_pipeline=pdf-extract-kit | scan_parser=pdf-extract-kit | agentic_parallel_workers=4 | rerank_base_url=http://127.0.0.1:8011/rerank | rerank_model=jina-reranker-v3.5</text>
+  <text x="82" y="1134" class="mono">document_pipeline=pdf-extract-kit | embedding_backend=local | embedding_model=BAAI/bge-small-zh-v1.5 | embedding_dimension=512 | agentic_parallel_workers=4 | rerank_model=jina-reranker-v3.5</text>
 
   <!-- tags -->
   <rect x="1415" y="44" width="185" height="28" class="tag-bg" />

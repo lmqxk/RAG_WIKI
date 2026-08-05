@@ -48,8 +48,20 @@ class Settings(BaseSettings):
     chat_model: str | None = None
     chat_max_tokens: int = 2048
     chat_think: bool | None = None
+    embedding_backend: str = "local"
     embedding_model: str | None = None
-    embedding_dimension: int = 384
+    embedding_dimension: int = 512
+    embedding_batch_size: int = 16
+    embedding_collection_name: str = "document_chunks_bge_small_zh_v1_5"
+    embedding_warmup_on_start: bool = True
+    local_embedding_model_dir: Path = (
+        PROJECT_ROOT
+        / ".models"
+        / "modelscope"
+        / "models"
+        / "BAAI--bge-small-zh-v1.5"
+    )
+    local_embedding_device: str = "auto"
 
     rerank_base_url: str | None = "http://127.0.0.1:8011/rerank"
     rerank_api_key: str | None = "local"
@@ -66,6 +78,7 @@ class Settings(BaseSettings):
     local_rerank_host: str = "127.0.0.1"
     local_rerank_port: int = 8011
     local_rerank_device: str = "auto"
+    local_rerank_warmup_on_start: bool = True
     local_rerank_hf_home: Path = PROJECT_ROOT / ".models" / "huggingface"
 
     retrieval_bm25_top_k: int = 20
@@ -89,6 +102,7 @@ class Settings(BaseSettings):
         self.mineru_model_dir = self.mineru_model_dir.resolve()
         self.local_rerank_model_dir = self.local_rerank_model_dir.resolve()
         self.local_rerank_hf_home = self.local_rerank_hf_home.resolve()
+        self.local_embedding_model_dir = self.local_embedding_model_dir.resolve()
 
     def ensure_directories(self) -> None:
         for path in (

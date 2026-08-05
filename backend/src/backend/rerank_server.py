@@ -7,6 +7,10 @@ import os
 from threading import Lock
 from typing import Any
 
+from .torch_runtime import prepare_torch_runtime
+
+prepare_torch_runtime()
+
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException

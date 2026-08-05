@@ -64,10 +64,21 @@ def build_components(
     return repository, parser, vector_index, ingestion, service
 
 
+def warmup_embeddings(settings: Settings, vector_index: VectorIndex) -> None:
+    if not settings.embedding_warmup_on_start:
+        return
+    try:
+        vector_index.embeddings.warmup()
+        logger.info("embedding_warmup_done backend=%s", vector_index.embeddings.backend)
+    except Exception:
+        logger.warning("embedding_warmup_failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     repository, parser, vector_index, ingestion, service = build_components(settings)
+    warmup_embeddings(settings, vector_index)
     app.state.settings = settings
     app.state.repository = repository
     app.state.parser = parser
@@ -116,12 +127,19 @@ def favicon() -> FileResponse:
 def health(request: Request) -> HealthOut:
     app_settings: Settings = request.app.state.settings
     parser: DocumentParser = request.app.state.parser
+    embeddings = request.app.state.vector_index.embeddings
     return HealthOut(
         status="ok",
         app=app_settings.app_name,
         version=__version__,
         llm_configured=bool(app_settings.openai_api_key and app_settings.chat_model),
-        embedding_configured=bool(app_settings.openai_api_key and app_settings.embedding_model),
+        embedding_configured=embeddings.configured,
+        embedding_backend=embeddings.backend,
+        embedding_model=(
+            app_settings.local_embedding_model_dir.name
+            if embeddings.backend == "local" and embeddings.local_available
+            else app_settings.embedding_model
+        ),
         parser_available=parser.available(),
         mineru_available=parser.mineru.available(),
         rapidocr_available=parser.rapidocr.available(),
