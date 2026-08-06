@@ -91,4 +91,3 @@ class HealthOut(BaseModel):
     mineru_available: bool
     rapidocr_available: bool
     document_pipeline: str
-    scan_parser: str

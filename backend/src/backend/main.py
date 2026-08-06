@@ -146,7 +146,6 @@ def health(request: Request) -> HealthOut:
         mineru_available=parser.mineru.available(),
         rapidocr_available=parser.rapidocr.available(),
         document_pipeline=app_settings.document_pipeline,
-        scan_parser=app_settings.scan_parser,
     )
 
 

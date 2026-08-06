@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -9,11 +10,13 @@ import shutil
 import subprocess
 import threading
 import time
+import zipfile
 from collections.abc import Callable
 from html.parser import HTMLParser
 from pathlib import Path
 
 import fitz
+import httpx
 import numpy as np
 
 from .config import Settings
@@ -363,15 +366,7 @@ class RapidOcrParser:
 
 PIPELINE_BACKENDS = {
     "pdf-extract-kit": "pipeline",
-    "pdf-extract-kit-1.0": "pipeline",
-    "opendatalab-pdf-extract-kit": "pipeline",
-    "opendatalab-pdf-extract-kit-1.0": "pipeline",
     "mineru": "vlm-engine",
-    "mineru-vlm": "vlm-engine",
-    "vlm": "vlm-engine",
-    "vlm-engine": "vlm-engine",
-    "hybrid": "hybrid-engine",
-    "hybrid-engine": "hybrid-engine",
 }
 
 
@@ -391,18 +386,14 @@ class DocumentPipelineParser:
         return str(candidate) if candidate.exists() else None
 
     def available(self) -> bool:
-        return self.command() is not None
+        return bool(self.settings.mineru_api_url) or self.command() is not None
 
     def pipeline(self) -> str:
         return self.settings.document_pipeline.strip().lower()
 
     def cli_backend(self) -> str:
         pipeline = self.pipeline()
-        if pipeline in PIPELINE_BACKENDS:
-            return PIPELINE_BACKENDS[pipeline]
-        if self.settings.mineru_backend:
-            return self.settings.mineru_backend
-        return pipeline
+        return PIPELINE_BACKENDS[pipeline]
 
     def parser_name(self) -> str:
         backend = self.cli_backend().lower()
@@ -424,6 +415,8 @@ class DocumentPipelineParser:
         output_dir: Path,
         progress: ProgressCallback,
     ) -> ParsedDocument:
+        if self.settings.mineru_api_url:
+            return self._parse_api(path, output_dir, progress)
         command = self.command()
         parser_label = self.parser_label()
         if command is None:
@@ -495,6 +488,47 @@ class DocumentPipelineParser:
             tail = "\n".join(output_lines[-20:])
             raise ParsingError(f"{parser_label} 解析失败（退出码 {return_code}）：\n{tail}")
         progress(57, f"读取 {parser_label} 结构化结果")
+        return self._load_output(output_dir)
+
+    def _parse_api(
+        self,
+        path: Path,
+        output_dir: Path,
+        progress: ProgressCallback,
+    ) -> ParsedDocument:
+        """调用 MinerU Compose API，并把 ZIP 结果转换为现有解析产物。"""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        base_url = str(self.settings.mineru_api_url).rstrip("/")
+        timeout_seconds = max(1, int(self.settings.document_parse_timeout_seconds))
+        progress(12, f"连接 MinerU Web API：{base_url}")
+        try:
+            with path.open("rb") as stream:
+                response = httpx.post(
+                    f"{base_url}/file_parse",
+                    files={"files": (path.name, stream, "application/pdf")},
+                    data={
+                        "return_md": "true",
+                        "return_content_list": "true",
+                        "return_middle_json": "true",
+                        "response_format_zip": "true",
+                        "return_images": "true",
+                    },
+                    timeout=timeout_seconds,
+                )
+        except (OSError, httpx.HTTPError) as exc:
+            raise ParsingError(f"MinerU Web API 请求失败：{exc}") from exc
+        if response.status_code >= 400:
+            detail = response.text[:2000]
+            raise ParsingError(f"MinerU Web API 返回 HTTP {response.status_code}：{detail}")
+        if not response.content.startswith(b"PK"):
+            detail = response.text[:2000]
+            raise ParsingError(f"MinerU Web API 未返回 ZIP 解析结果：{detail}")
+        try:
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                archive.extractall(output_dir)
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise ParsingError(f"MinerU Web API 结果 ZIP 无法读取：{exc}") from exc
+        progress(57, "读取 MinerU Web API 结构化结果")
         return self._load_output(output_dir)
 
     def _environment(self, output_dir: Path) -> dict[str, str]:
@@ -672,8 +706,7 @@ class DocumentParser:
             return self.native.parse(path, progress)
         if pipeline == "rapidocr":
             return self.rapidocr.parse(path, progress)
-        scan_parser = self.settings.scan_parser.strip().lower()
-        if pipeline in PIPELINE_BACKENDS or scan_parser in PIPELINE_BACKENDS:
+        if pipeline in PIPELINE_BACKENDS:
             if self.mineru.available():
                 return self.mineru.parse(path, output_dir, progress)
             if needs_ocr:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -25,7 +25,7 @@ NODE = (
 NPM_CLI = ROOT / ".tools" / "npm-cli" / "package" / "bin" / "npm-cli.js"
 
 sys.path.insert(0, str(BACKEND_SRC))
-from backend.config import get_settings  # noqa: E402
+from backend.config import get_settings
 
 
 def local_rerank_enabled(url: str | None) -> bool:
@@ -72,6 +72,51 @@ def warmup_rerank(settings) -> bool:
         return False
 
 
+def local_mineru_enabled(settings) -> bool:
+    if settings.document_pipeline != "mineru" or not settings.mineru_api_url:
+        return False
+    parsed = urlparse(settings.mineru_api_url)
+    return parsed.hostname in {"127.0.0.1", "localhost"}
+
+
+def ensure_mineru(settings) -> bool:
+    if not local_mineru_enabled(settings):
+        return True
+    health_url = f"{settings.mineru_api_url.rstrip('/')}/health"
+    if wait_for(health_url, timeout=2):
+        print(f"MinerU API 已运行：{settings.mineru_api_url}")
+        return True
+    if not settings.mineru_auto_start:
+        print(f"MinerU API 未运行：{settings.mineru_api_url}")
+        return False
+    compose_file = settings.mineru_compose_dir / "compose.yaml"
+    if not compose_file.exists():
+        print(f"MinerU Compose 文件不存在：{compose_file}")
+        return False
+    print(f"正在启动 MinerU Compose：{compose_file}")
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(compose_file),
+                "--profile",
+                "api",
+                "up",
+                "-d",
+            ],
+            cwd=settings.mineru_compose_dir,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"MinerU Compose 启动失败：{exc}")
+        return False
+    ready = wait_for(health_url, timeout=300)
+    print("MinerU API 已就绪。" if ready else "MinerU API 启动超时，请查看 Docker 日志。")
+    return ready
+
+
 def main() -> int:
     missing = [path for path in (PYTHON, NODE, NPM_CLI) if not path.exists()]
     if missing:
@@ -81,6 +126,7 @@ def main() -> int:
         return 2
 
     settings = get_settings()
+    mineru_ready = ensure_mineru(settings)
     environment = os.environ.copy()
     environment.update(
         {
@@ -159,6 +205,9 @@ def main() -> int:
                     f"http://{settings.local_rerank_host}:{settings.local_rerank_port}/rerank"
                     f" ({status})"
                 )
+            if settings.document_pipeline == "mineru":
+                status = "已启动" if mineru_ready else "未就绪，解析时会失败"
+                print(f"  MinerU API: {settings.mineru_api_url} ({status})")
             print("按 Ctrl+C 停止服务。\n")
         else:
             print("服务启动超时，请查看上方日志。")

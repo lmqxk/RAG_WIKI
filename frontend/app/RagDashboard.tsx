@@ -136,7 +136,6 @@ type Health = {
   parser_available?: boolean;
   mineru_available: boolean;
   document_pipeline?: string;
-  scan_parser?: string;
 };
 
 const STATUS_LABEL: Record<string, string> = {

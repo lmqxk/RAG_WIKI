@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,11 +34,14 @@ class Settings(BaseSettings):
     max_workers: int = 1
     document_parse_timeout_seconds: int = 1800
 
-    document_pipeline: str = "pdf-extract-kit"
-    scan_parser: str = "pdf-extract-kit"
+    document_pipeline: Literal["pdf-extract-kit", "mineru", "rapidocr", "pymupdf"] = (
+        "pdf-extract-kit"
+    )
     ocr_render_dpi: int = 180
     mineru_command: str | None = None
-    mineru_backend: str | None = None
+    mineru_api_url: str | None = "http://127.0.0.1:8001"
+    mineru_auto_start: bool = True
+    mineru_compose_dir: Path = PROJECT_ROOT / "deploy" / "mineru"
     mineru_method: str = "auto"
     mineru_ocr_lang: str = "ch"
     mineru_model_source: str = "modelscope"
@@ -105,6 +109,7 @@ class Settings(BaseSettings):
         self.sqlite_path = (self.sqlite_path or self.data_dir / "rag.db").resolve()
         self.qdrant_path = (self.qdrant_path or self.data_dir / "qdrant").resolve()
         self.mineru_model_dir = self.mineru_model_dir.resolve()
+        self.mineru_compose_dir = self.mineru_compose_dir.resolve()
         self.local_rerank_model_dir = self.local_rerank_model_dir.resolve()
         self.local_rerank_hf_home = self.local_rerank_hf_home.resolve()
         self.local_embedding_model_dir = self.local_embedding_model_dir.resolve()

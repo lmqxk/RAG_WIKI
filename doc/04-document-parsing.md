@@ -208,20 +208,33 @@ curl.exe http://127.0.0.1:8000/api/jobs/{job_id}
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `RAG_MAX_PDF_PAGES` | `600` | PDF 页数上限 |
-| `RAG_DOCUMENT_PIPELINE` | `pdf-extract-kit` | 文档解析管线别名，推荐使用这个变量切换解析链路 |
-| `RAG_SCAN_PARSER` | `pdf-extract-kit` | 旧解析器入口，保留兼容，不建议再作为管线选择项 |
+| `RAG_DOCUMENT_PIPELINE` | `pdf-extract-kit` | 唯一的文档解析管线开关 |
 | `RAG_OCR_RENDER_DPI` | `180` | OCR 渲染 DPI |
 | `RAG_MINERU_COMMAND` | 空 | 解析命令路径，底层仍使用 `mineru.exe` CLI |
-| `RAG_MINERU_BACKEND` | 空 | 旧 CLI backend 覆盖项，仅兼容历史配置；新配置优先用 `RAG_DOCUMENT_PIPELINE` |
 | `RAG_MINERU_METHOD` | `auto` | 解析 method |
 | `RAG_MINERU_OCR_LANG` | `ch` | OCR 语言 |
 
-`RAG_DOCUMENT_PIPELINE` 当前支持的常用别名：
+在项目根目录 `.env` 中设置 `RAG_DOCUMENT_PIPELINE`：
 
-| 别名 | 实际管线 |
+```dotenv
+RAG_DOCUMENT_PIPELINE=pdf-extract-kit
+```
+
+当前支持的值：
+
+| 值 | 实际管线 |
 | --- | --- |
 | `pdf-extract-kit` | OpenDataLab PDF-Extract-Kit 1.0，对应 CLI backend `pipeline` |
-| `mineru` / `mineru-vlm` / `vlm` | MinerU VLM，对应 CLI backend `vlm-engine` |
-| `hybrid` | MinerU hybrid，对应 CLI backend `hybrid-engine` |
+| `mineru` | MinerU VLM，对应 CLI backend `vlm-engine` |
 | `rapidocr` | 直接使用 RapidOCR fallback |
-| `pymupdf` / `native` | 直接使用 PyMuPDF 文本层提取 |
+| `pymupdf` | 直接使用 PyMuPDF 文本层提取 |
+
+切换到 MinerU VLM：
+
+```dotenv
+RAG_DOCUMENT_PIPELINE=mineru
+```
+
+修改 `.env` 后需要重启后端。
+
+不再支持旧的 `RAG_SCAN_PARSER`、`RAG_MINERU_BACKEND` 和历史别名；解析切换统一使用 `RAG_DOCUMENT_PIPELINE`。
