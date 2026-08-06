@@ -29,6 +29,8 @@
 - SQLite FTS5 BM25 + 本地 BGE 中文向量召回 + Qdrant Local + RRF + Jina Rerank。
 - 单文档问答、跨文档综合回答和新旧规范对比。
 - 对比类问题带轻量 Agentic 编排：Planner LLM 自动拆解多维度检索计划，并行检索后按文档组织资料包。
+- Planner 会参考数据库中的 READY 文档目录和 Wiki `metadata.json` 摘要、主题、概念，再生成受控的多步检索计划；最终答案仍只以原文检索资料为依据。
+- Wiki Markdown 用于人工浏览、概念导航、chunk 原文锚点和关系计算，不会把全部页面一次性塞入 Planner；详细页面后续按需读取。
 - 流式回答接口记录检索耗时、首 token 时间和总耗时，方便持续调优。
 - 回答末尾附引用，引用卡片可跳转到 PDF 原页。
 - 区分规范正文与条文说明，确定性结论优先规范正文。
@@ -49,7 +51,7 @@ flowchart LR
     C --> S[(SQLite FTS5)]
     C --> V[Embedding：BGE-small-zh-v1.5]
     V --> Q[(Qdrant 向量索引)]
-    C --> WK[派生 Wiki：文档页与概念页]
+    C --> WK[派生 Wiki：metadata、文档页、概念页、关系图]
 
     R --> P2[Agent Planner LLM]
     WK --> P2
@@ -66,6 +68,19 @@ flowchart LR
     G --> X[回答与原文引用]
     X --> W
 ```
+
+Wiki 是基于解析结果和 chunks 生成的派生知识层，不替代 SQLite、Qdrant 或 PDF 原文：
+
+```text
+ParsedDocument + Chunk
+  -> WikiManager._analyze()
+  -> storage/wiki/metadata/{document_id}.json
+  -> documents/*.md、concepts/*.md、overview.md、related.json
+  -> Planner 读取 metadata 的摘要、主题和概念
+  -> 最终仍回到 BM25、向量检索和重排序获取原文资料
+```
+
+Planner 当前读取的 Wiki 信息是轻量 metadata，不是所有 Markdown 页面。详细 Wiki 页面用于人工浏览、交叉链接、chunk 锚点和关系图；未来可通过 `search_wiki`、`get_related_pages` 按需扩展 Planner 上下文。
 
 数据处理主流程：
 
@@ -282,6 +297,12 @@ $env:RAG_RERANK_MODEL = "your-rerank-model"
 如果只问“新旧规范”，系统会在可检索文档中按版本尝试选择新旧文档。前端手动勾选文档时，以手动选择为准。
 
 当前效果相比早期单次检索更稳定：跨文档、对比和资料不足类问题会先生成多条查询改写，再从不同文档和维度补充召回，减少只命中文档开头总说明、前言或目录的情况。
+
+更多工程说明：
+
+- [项目总览](doc/01-overview.md)
+- [Agentic RAG 与 Planner](doc/11-agentic-rag.md)
+- [Wiki 派生知识层](doc/12-wiki-layer.md)
 
 ## 开发验证
 
