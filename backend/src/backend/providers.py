@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from threading import Lock
@@ -19,6 +21,8 @@ from .torch_runtime import prepare_torch_runtime
 
 prepare_torch_runtime()
 
+logger = logging.getLogger("uvicorn.error")
+
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*|[\u3400-\u9fff]")
 ASCII_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*")
 HAN_SEQUENCE_RE = re.compile(r"[\u3400-\u9fff]+")
@@ -31,9 +35,7 @@ def lexical_tokens(text: str) -> set[str]:
         if len(sequence) == 1:
             tokens.add(sequence)
         else:
-            tokens.update(
-                sequence[index : index + 2] for index in range(len(sequence) - 1)
-            )
+            tokens.update(sequence[index : index + 2] for index in range(len(sequence) - 1))
     return tokens
 
 
@@ -89,6 +91,22 @@ def evidence_payload(question: str, hits: list[SearchHit], query_type: str) -> o
     }
 
 
+def _loads_json_object(content: str) -> dict[str, object] | None:
+    text = content.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1)
+    else:
+        object_match = re.search(r"\{.*\}", text, re.DOTALL)
+        if object_match:
+            text = object_match.group(0)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 class EmbeddingProvider:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -104,9 +122,8 @@ class EmbeddingProvider:
 
     @property
     def external(self) -> bool:
-        return (
-            self.backend == "openai"
-            and bool(self.settings.openai_api_key and self.settings.embedding_model)
+        return self.backend == "openai" and bool(
+            self.settings.openai_api_key and self.settings.embedding_model
         )
 
     @property
@@ -130,8 +147,7 @@ class EmbeddingProvider:
         if self.backend == "local":
             if not self.local_available:
                 raise RuntimeError(
-                    "本地 Embedding 模型未下载："
-                    f"{self.settings.local_embedding_model_dir}"
+                    f"本地 Embedding 模型未下载：{self.settings.local_embedding_model_dir}"
                 )
             return self._local_embed(texts)
         return [self._hash_embed(text) for text in texts]
@@ -332,6 +348,88 @@ class ChatProvider:
             return self._external_answer(question, hits, query_type).strip()
         return self._extractive_answer(question, hits, query_type)
 
+    def generate_json(
+        self,
+        system_prompt: str,
+        user_payload: dict[str, object],
+        *,
+        max_tokens: int = 1200,
+    ) -> dict[str, object] | None:
+        """调用当前回答模型生成结构化派生数据；不可用时返回 None。"""
+
+        if not self.external:
+            return None
+        assert self.settings.openai_api_key
+        assert self.settings.chat_model
+        payload: dict[str, object] = {
+            "model": self.settings.chat_model,
+            "temperature": 0,
+            "max_tokens": max(max_tokens, self.settings.chat_max_tokens),
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+        }
+        if self.settings.chat_think is not None:
+            payload["thinking"] = {"type": "enabled" if self.settings.chat_think else "disabled"}
+
+        for attempt in range(3):
+            try:
+                response = httpx.post(
+                    f"{self.settings.openai_base_url.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.settings.openai_api_key}",
+                        "Connection": "close",
+                    },
+                    json=payload,
+                    timeout=180,
+                )
+                response.raise_for_status()
+                response_payload = response.json()
+                choice = response_payload["choices"][0]
+                message = choice["message"]
+                content = message.get("content") or ""
+                if not content:
+                    logger.warning(
+                        "structured_generation_empty_content "
+                        "message_keys=%s finish_reason=%s reasoning_length=%s",
+                        sorted(message),
+                        choice.get("finish_reason"),
+                        len(str(message.get("reasoning_content") or "")),
+                    )
+                break
+            except httpx.TransportError as exc:
+                if attempt == 2:
+                    logger.warning(
+                        "structured_generation_request_failed attempts=%s error=%s",
+                        attempt + 1,
+                        exc,
+                    )
+                    return None
+                logger.warning(
+                    "structured_generation_retry attempt=%s error=%s",
+                    attempt + 1,
+                    exc,
+                )
+                time.sleep(attempt + 1)
+            except httpx.HTTPStatusError as exc:
+                logger.warning(
+                    "structured_generation_request_failed status=%s", exc.response.status_code
+                )
+                return None
+            except (KeyError, TypeError) as exc:
+                logger.warning("structured_generation_response_invalid error=%s", exc)
+                return None
+        parsed = _loads_json_object(str(content))
+        if parsed is None:
+            preview = re.sub(r"\s+", " ", str(content)).strip()[:400]
+            logger.warning(
+                "structured_generation_json_invalid content_length=%s content_preview=%r",
+                len(str(content)),
+                preview,
+            )
+        return parsed
+
     def _external_answer(
         self,
         question: str,
@@ -418,7 +516,7 @@ class ChatProvider:
             ],
         }
         if self.settings.chat_think is not None:
-            payload["think"] = self.settings.chat_think
+            payload["thinking"] = {"type": "enabled" if self.settings.chat_think else "disabled"}
         return payload
 
     def _extractive_answer(

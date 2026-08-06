@@ -14,7 +14,40 @@
 
 系统没有引入 LangChain 或 LlamaIndex，工具调用、状态和异常回退均由项目代码控制，便于调试和追踪。
 
-## 2. 完整流程
+## 2. Planner 的输入边界
+
+Planner 不是直接阅读所有 PDF 或全部 Wiki 页面，而是接收三类轻量上下文：
+
+1. **用户问题**：原始问题、比较意图和用户指定的文档范围。
+2. **可用文档目录**：来自数据库中状态为 `READY` 的文档，字段包括 `id`、`title`、`standard_no`、`version` 和 `filename`。
+3. **Wiki metadata**：来自 `storage/wiki/metadata/{document_id}.json` 的 `summary`、`topics` 和概念名称列表。
+
+传给 Planner 的 Wiki 上下文类似：
+
+```json
+{
+  "document_id": "...",
+  "summary": "建筑防火相关强制性要求……",
+  "topics": ["工业建筑", "防火分区"],
+  "concepts": ["耐火等级", "防火间距"]
+}
+```
+
+Planner 当前不会把 `documents/*.md`、`concepts/*.md`、PDF 正文、图片或全部 chunk 一次性放入上下文。这样可以控制 token 和规划耗时，并避免把 Wiki 摘要误当成最终证据。详细 Wiki 页面仍然用于人工浏览、概念导航、原文锚点和 `related.json` 关系计算；后续可增加 `search_wiki`、`get_related_pages`，按需读取相关页面。
+
+`metadata.json` 的生成链路是：
+
+```text
+PDF-Extract-Kit
+  -> ParsedDocument + Chunk
+  -> WikiManager._analyze()
+  -> LLM 结构化摘要、主题、概念
+  -> storage/wiki/metadata/{document_id}.json
+```
+
+LLM 分析失败时，Wiki 使用确定性 fallback；metadata 缺失时 Planner 仍可使用数据库文档目录和本地基础检索计划。
+
+## 3. 完整流程
 
 ```text
 用户问题
@@ -29,7 +62,7 @@
   -> Answer LLM 流式生成回答
 ```
 
-## 3. Planner JSON
+## 4. Planner JSON
 
 Planner 输出的计划由 Pydantic 模型校验，核心结构如下：
 
@@ -56,7 +89,7 @@ Planner 输出的计划由 Pydantic 模型校验，核心结构如下：
 
 `document_ref` 必须能解析为已入库文档的 ID、标准号、标题或文件名，不能调用外部搜索，也不能访问允许文档之外的资料。
 
-## 4. 并行检索
+## 5. 并行检索
 
 每个 `step` 都会调用已有的 `HybridRetriever`。单个步骤内部包含：
 
@@ -74,7 +107,7 @@ Agentic 多步骤阶段关闭子步骤重排序，只保留足够大的候选集
 agentic_parallel_workers = 4
 ```
 
-## 5. 补充检索
+## 6. 补充检索
 
 当前补检是受控回退，不是第二次 Planner LLM 推理循环。以下情况会触发补检：
 
@@ -86,7 +119,7 @@ agentic_parallel_workers = 4
 
 因此当前系统具备“一次规划、多步检索、条件补检”，但还不是“LLM 阅读第一轮资料后自主制定第二轮计划”的完整多轮 Agent。后续如果需要增强，应在补检前增加一个结构化的 LLM 资料覆盖判断器。
 
-## 6. 最终资料包和回答
+## 7. 最终资料包和回答
 
 最终候选会经过：
 
@@ -99,7 +132,7 @@ Answer LLM 只接收最终资料 JSON，不接收 Planner 的内部过程，也�
 
 前端根据回答正文中的 `[n]` 引用编号关联第 `n` 条资料。回答没有引用编号时，不额外展示图片预览。
 
-## 7. 回退策略
+## 8. 回退策略
 
 ```text
 Planner LLM 不可用
@@ -115,7 +148,7 @@ BGE 模型不可用
 
 默认不建议使用哈希向量做正式效果评估。正式检索使用本地 `BAAI/bge-small-zh-v1.5`，输出 512 维向量，存储在独立的 `document_chunks_bge_small_zh_v1_5` Qdrant 集合中。
 
-## 8. 模型加载和预热
+## 9. 模型加载和预热
 
 问答服务启动时：
 
@@ -132,7 +165,7 @@ local_rerank_warmup_on_start = True
 
 BGE 模型和 `transformers` 的首次加载由锁保护，避免 Agent 并行检索线程同时初始化模型。
 
-## 9. 性能日志
+## 10. 性能日志
 
 流式问答完成后，后端将指标写入：
 
@@ -153,7 +186,7 @@ storage/logs/chat-metrics.jsonl
 
 这些指标用于判断慢点是在 Planner、召回、重排还是回答模型，而不是只看一个总检索时间。
 
-## 10. 关键配置
+## 11. 关键配置
 
 ```python
 agentic_retrieval_enabled = True

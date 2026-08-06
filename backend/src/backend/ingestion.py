@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .chunking import build_chunks
 from .config import Settings
-from .domain import PageBlock, ParsedDocument
+from .domain import Chunk, PageBlock, ParsedDocument
 from .parser import DocumentParser
 from .repository import Repository
 from .vector_index import VectorIndex
+from .wiki import WikiManager
+
+logger = logging.getLogger(__name__)
 
 
 class IngestionManager:
@@ -22,11 +26,13 @@ class IngestionManager:
         repository: Repository,
         parser: DocumentParser,
         vector_index: VectorIndex,
+        wiki: WikiManager | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.parser = parser
         self.vector_index = vector_index
+        self.wiki = wiki
         self.executor = ThreadPoolExecutor(
             max_workers=settings.max_workers,
             thread_name_prefix="rag-ingestion",
@@ -116,6 +122,15 @@ class IngestionManager:
                 message=f"建立混合检索索引，共 {len(chunks)} 个片段",
             )
             self.vector_index.replace_document(document_id, chunks)
+            if self.wiki:
+                self.repository.update_job(
+                    job_id,
+                    status="RUNNING",
+                    stage="wiki",
+                    progress=88,
+                    message="基于已解析原文生成 Wiki 知识页",
+                )
+                self._sync_wiki(document, parsed, chunks, event="ingest")
             self.repository.update_document(document_id, status="READY", error=None)
             self.repository.update_job(
                 job_id,
@@ -190,6 +205,24 @@ class IngestionManager:
                 message=f"重建混合检索索引，共 {len(chunks)} 个片段",
             )
             self.vector_index.replace_document(document_id, chunks)
+            if self.wiki:
+                parsed = ParsedDocument(
+                    pages=int(payload.get("pages", 0)),
+                    blocks=blocks,
+                    markdown=(parsed_path / "document.md").read_text(encoding="utf-8")
+                    if (parsed_path / "document.md").exists()
+                    else "",
+                    parser_name=str(payload.get("parser_name", "unknown")),
+                    needs_ocr=bool(payload.get("needs_ocr", False)),
+                )
+                self.repository.update_job(
+                    job_id,
+                    status="RUNNING",
+                    stage="wiki",
+                    progress=88,
+                    message="基于已有解析结果生成 Wiki 知识页",
+                )
+                self._sync_wiki(document, parsed, chunks, event="reindex")
             self.repository.update_document(document_id, status="READY", error=None)
             self.repository.update_job(
                 job_id,
@@ -240,3 +273,19 @@ class IngestionManager:
             encoding="utf-8",
         )
         (output_dir / "document.md").write_text(parsed.markdown, encoding="utf-8")
+
+    def _sync_wiki(
+        self,
+        document: dict[str, object],
+        parsed: ParsedDocument,
+        chunks: list[Chunk],
+        *,
+        event: str,
+    ) -> None:
+        """Wiki 是派生产物，失败不能阻断原文入库与检索。"""
+
+        assert self.wiki is not None
+        try:
+            self.wiki.sync_document(document, parsed, chunks, event=event)
+        except Exception:
+            logger.warning("wiki_sync_failed document_id=%s", document.get("id"), exc_info=True)

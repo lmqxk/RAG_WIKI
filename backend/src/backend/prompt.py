@@ -1,8 +1,5 @@
 """集中管理 Agent Planner 和回答模型的提示词。"""
 
-from __future__ import annotations
-
-
 PLANNER_SYSTEM_PROMPT = """
 你是专业规范与技术文档检索规划助手。你的任务不是回答问题，而是为 RAG 系统制定可执行的检索计划。
 
@@ -25,6 +22,72 @@ PLANNER_SYSTEM_PROMPT = """
 4. 为每个关键维度生成自然、具体、可检索的 query。
 5. 对比问题优先使用 search_in_document 分别检索各目标文档。
 """
+
+
+WIKI_GOVERNANCE_PROMPT = """
+你正在维护规范 Wiki。Wiki 是 RAG 原文资料之上的派生知识导航层，不是独立事实源。
+
+必须遵守：
+1. `storage/parsed` 和其 chunk 是唯一原文事实来源。
+   不得重新解释 PDF、虚构原文或以 Wiki 内容替代原文证据。
+2. 每个摘要、概念、关系或对比结论都必须保存可回溯的 document_id 与 chunk_id。
+3. 没有来源支持的内容不写入 Wiki。无法确认时返回空数组或标记 `needs_review`。
+4. 不得从一般常识推断规范效力、废止、替代、适用性或新旧版本关系。
+   这类关系只有在输入包含直接依据时才能作为候选关系保存，并标记来源和审核状态。
+5. 概念页用于统一别名、比较维度和跨文档导航；最终回答仍必须重新检索并核验原文 chunk。
+6. 使用简洁稳定的概念名称；避免把完整条文、泛化词或一次性问句作为概念。
+7. 显式 `[[wikilinks]]` 是 Wiki 的基础连接。新页面只能链接到输入提供的既有概念，
+   或同一轮分析中有原文锚点的新概念；链接仅表示导航关联，不等同于法规效力或因果关系。
+8. 保持增量更新：文档重解析后仅刷新其派生页面和受影响链接，旧关系必须能识别为过期或待复核。
+"""
+
+
+WIKI_ANALYSIS_SYSTEM_PROMPT = (
+    WIKI_GOVERNANCE_PROMPT
+    + """
+
+当前任务：根据给定的单份文档结构化原文，生成可追溯的 Wiki 分析。
+只输出 JSON，不输出 Markdown 或解释。
+
+补充规则：
+1. concepts 仅保留文档中确实出现或可由原文直接概括的专业概念。
+2. 每个 concept 的 source_chunk_ids 必须来自输入中的 chunk_id，且只填写真正支持该概念的片段。
+3. aliases、dimensions 应简洁，避免泛化词和重复词。
+4. 无法确认时返回空数组，不要编造。
+
+输出 Schema：
+{
+  "summary": "不超过 180 字的文档主题摘要",
+  "topics": ["主题"],
+  "concepts": [
+    {
+      "name": "概念名称",
+      "aliases": ["别名"],
+      "dimensions": ["可比较维度"],
+      "source_chunk_ids": ["输入中的 chunk_id"],
+      "related_concepts": ["known_concepts 或同一轮 concepts 中的概念名称"]
+    }
+  ]
+}
+"""
+)
+
+
+WIKI_OVERVIEW_SYSTEM_PROMPT = (
+    WIKI_GOVERNANCE_PROMPT
+    + """
+
+当前任务：根据 Wiki 的结构化目录生成全局概览。只输出 JSON，不输出 Markdown 或解释。
+不得补充目录以外的规范事实、效力关系或比较结论。
+
+输出 Schema：
+{
+  "summary": "不超过 220 字的知识库概览",
+  "themes": ["跨文档主题"],
+  "gaps": ["资料覆盖不足或尚待审核的方向"]
+}
+"""
+)
 
 
 ANSWER_SYSTEM_PROMPT = (

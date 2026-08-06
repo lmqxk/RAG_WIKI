@@ -125,7 +125,7 @@ storage/parsed/{document_id}/normalized.json
 }
 ```
 
-`reindex` 会读取已有 `normalized.json` 里的 `images` 并重新切分、索引。若旧文档的 `normalized.json` 里没有 `images`，需要走 `reparse` 重新解析 PDF。
+`reindex` 会读取已有 `normalized.json` 里的 `images` 并重新切分、索引，同时刷新该文档从解析产物派生的 Wiki 页面。若旧文档的 `normalized.json` 里没有 `images`，需要走 `reparse` 重新解析 PDF。
 
 ## 维护注意
 

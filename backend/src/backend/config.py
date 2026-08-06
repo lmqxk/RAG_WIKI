@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     agentic_parallel_workers: int = 4
     agentic_min_hits: int = 4
 
+    # Wiki 是基于已解析原文生成的派生知识层，不参与 PDF 二次解析。
+    wiki_enabled: bool = True
+    wiki_llm_enabled: bool = True
+    wiki_analysis_max_source_chars: int = 7000
+
     sqlite_path: Path | None = Field(default=None)
     qdrant_path: Path | None = Field(default=None)
 
@@ -109,6 +114,7 @@ class Settings(BaseSettings):
             self.data_dir,
             self.data_dir / "uploads",
             self.data_dir / "parsed",
+            self.data_dir / "wiki",
             self.data_dir / "qdrant",
             self.mineru_model_dir,
             self.local_rerank_hf_home,

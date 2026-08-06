@@ -16,8 +16,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .config import Settings
 from .domain import SearchHit
-from .repository import Repository
 from .prompt import PLANNER_SYSTEM_PROMPT
+from .repository import Repository
 from .retrieval import (
     HybridRetriever,
     QueryPlan,
@@ -25,6 +25,7 @@ from .retrieval import (
     normalize_identifier,
     plan_query,
 )
+from .wiki import WikiManager
 
 ALLOWED_TOOLS = {"search_general", "search_in_document"}
 
@@ -44,8 +45,7 @@ class SearchStep(BaseModel):
     document_ref: str | None = Field(
         None,
         description=(
-            "search_in_document 必填。可填写 allowed_docs 中的 "
-            "id、standard_no、title 或 filename"
+            "search_in_document 必填。可填写 allowed_docs 中的 id、standard_no、title 或 filename"
         ),
     )
     dimension: str = Field(
@@ -105,10 +105,12 @@ class AgenticRetriever:
         settings: Settings,
         repository: Repository,
         retriever: HybridRetriever,
+        wiki: WikiManager | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.retriever = retriever
+        self.wiki = wiki
 
     def retrieve(
         self,
@@ -126,6 +128,8 @@ class AgenticRetriever:
         if not self.settings.agentic_retrieval_enabled:
             started_at = time.perf_counter()
             kind, hits = self.retriever.retrieve(question, document_ids)
+            if self.wiki:
+                self.wiki.log_query(question, kind, hits)
             return AgentRun(
                 kind=kind,
                 hits=hits,
@@ -156,6 +160,8 @@ class AgenticRetriever:
         rerank_started_at = time.perf_counter()
         final_hits = self._finalize(question, plan.kind, hits)
         rerank_ms = (time.perf_counter() - rerank_started_at) * 1000
+        if self.wiki:
+            self.wiki.log_query(question, plan.kind, final_hits)
 
         return AgentRun(
             kind=plan.kind,
@@ -208,12 +214,17 @@ class AgenticRetriever:
         ]
         if not document_payload:
             return []
+        scoped_documents = [
+            document for document in ready_documents if str(document["id"]) in allowed_document_ids
+        ]
+        wiki_context = self.wiki.catalog_context(scoped_documents) if self.wiki else []
         user = {
             "question": question,
             "query_type_hint": plan.kind,
             "focused_query_hint": plan.search_question,
             "max_steps": self.settings.agentic_max_steps,
             "allowed_docs": document_payload,
+            "wiki_context": wiki_context,
             "output_schema": {
                 "intent": "comparison | single_query | exploration",
                 "query_rewrites": ["多角度自由改写 query，覆盖不同信息维度"],
@@ -222,13 +233,12 @@ class AgenticRetriever:
                         "tool": "search_general | search_in_document",
                         "query": "由 LLM 自主生成的具体检索 query，最长 120 字",
                         "document_ref": (
-                            "search_in_document 必填，"
-                            "可用 id、standard_no、title 或 filename"
+                            "search_in_document 必填，可用 id、standard_no、title 或 filename"
                         ),
                         "dimension": "该 query 覆盖的信息维度",
                         "reason": "为什么这样检索",
                     }
-                ]
+                ],
             },
         }
         try:
@@ -447,13 +457,10 @@ def _resolve_document_ref(
         ]
         for identifier in identifiers:
             normalized_identifier = normalize_identifier(identifier)
-            if (
-                normalized_identifier
-                and (
-                    normalized_ref == normalized_identifier
-                    or normalized_ref in normalized_identifier
-                    or normalized_identifier in normalized_ref
-                )
+            if normalized_identifier and (
+                normalized_ref == normalized_identifier
+                or normalized_ref in normalized_identifier
+                or normalized_identifier in normalized_ref
             ):
                 return document_id
     return None

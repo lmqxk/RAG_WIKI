@@ -36,6 +36,7 @@ from .schemas import (
 )
 from .service import RagService
 from .vector_index import VectorIndex
+from .wiki import WikiManager
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -57,9 +58,10 @@ def build_components(
     vector_index = VectorIndex(settings, embeddings)
     reranker = RerankProvider(settings)
     retriever = HybridRetriever(settings, repository, vector_index, reranker)
-    agentic_retriever = AgenticRetriever(settings, repository, retriever)
     chat = ChatProvider(settings)
-    ingestion = IngestionManager(settings, repository, parser, vector_index)
+    wiki = WikiManager(settings, chat)
+    agentic_retriever = AgenticRetriever(settings, repository, retriever, wiki)
+    ingestion = IngestionManager(settings, repository, parser, vector_index, wiki)
     service = RagService(settings, repository, ingestion, agentic_retriever, chat)
     return repository, parser, vector_index, ingestion, service
 

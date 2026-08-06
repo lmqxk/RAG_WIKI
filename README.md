@@ -49,11 +49,15 @@ flowchart LR
     C --> S[(SQLite FTS5)]
     C --> V[Embedding：BGE-small-zh-v1.5]
     V --> Q[(Qdrant 向量索引)]
+    C --> WK[派生 Wiki：文档页与概念页]
 
     R --> P2[Agent Planner LLM]
+    WK --> P2
     P2 --> P3[多维 Query 改写与检索计划]
-    P3 --> S
-    P3 --> Q
+    P3 --> RX[检索执行器]
+    RX --> S
+    RX --> QE[Query Embedding：BGE]
+    QE --> Q
     S --> E[BM25 + 向量召回 + RRF 融合]
     Q --> E
     E --> RR[Jina Reranker v3.5]
@@ -85,6 +89,7 @@ PDF 上传
 | API 入口 | `backend/src/backend/main.py` | 健康检查、文档、任务、文件和问答接口 |
 | 文档解析 | `backend/src/backend/parser.py` | 默认 PDF-Extract-Kit 管线解析 PDF，并保留表格、图片和版面信息 |
 | 文档入库 | `backend/src/backend/ingestion.py` | 解析、切分、索引和任务状态编排 |
+| Wiki 派生层 | `backend/src/backend/wiki.py` | 基于解析产物生成带 chunk 锚点的文档页、概念页和 Planner 上下文 |
 | 文本切分 | `backend/src/backend/chunking.py` | 按章节、条款和页码生成检索块 |
 | 检索编排 | `backend/src/backend/retrieval.py` | 条款定位、全文检索、向量检索、跨文档平衡和结果融合 |
 | Agentic 检索 | `backend/src/backend/agent.py` | LLM JSON 规划、多维度查询改写、并行检索步骤和回退计划 |
@@ -144,7 +149,7 @@ RAG_ZB/
 │  ├─ public/               # favicon 和社交预览资源
 │  └─ package.json          # 前端依赖与脚本
 ├─ scripts/                  # 启动和辅助脚本
-├─ storage/                  # PDF、解析结果、SQLite 和 Qdrant 数据
+├─ storage/                  # PDF、解析结果、SQLite、Qdrant 和派生 Wiki
 ├─ .models/                  # 可选本地解析模型
 ├─ .tools/                   # 项目级工具、缓存和运行依赖
 ├─ .env                      # 本地运行配置，不提交 Git
