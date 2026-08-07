@@ -104,8 +104,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         settings.frontend_origin,
-        "http://127.0.0.1:3000",
-        "http://localhost:3000",
+        f"http://127.0.0.1:{settings.frontend_port}",
+        f"http://localhost:{settings.frontend_port}",
     ],
     allow_credentials=False,
     allow_methods=["*"],

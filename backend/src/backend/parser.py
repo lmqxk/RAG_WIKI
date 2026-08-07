@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -365,6 +366,7 @@ class RapidOcrParser:
 
 
 PIPELINE_BACKENDS = {
+    "paddlevl": "paddlevl",
     "pdf-extract-kit": "pipeline",
     "mineru": "vlm-engine",
 }
@@ -409,12 +411,67 @@ class DocumentPipelineParser:
             return "MinerU VLM"
         return f"MinerU {backend}"
 
+    def _parse_paddlevl(
+        self,
+        path: Path,
+        progress: ProgressCallback,
+    ) -> ParsedDocument:
+        """调用 PaddleOCR-VL layout-parsing API，并转换为统一页级文本。"""
+        if not self.settings.paddlevl_api_url:
+            raise ParsingError("PaddleOCR-VL API 地址未配置")
+        progress(12, "连接 PaddleOCR-VL API")
+        payload = {
+            "file": base64.b64encode(path.read_bytes()).decode("ascii"),
+            "fileType": 0,
+            "returnMarkdownImages": False,
+        }
+        try:
+            response = httpx.post(
+                f"{self.settings.paddlevl_api_url.rstrip('/')}/layout-parsing",
+                json=payload,
+                timeout=max(1, int(self.settings.document_parse_timeout_seconds)),
+            )
+        except (OSError, httpx.HTTPError) as exc:
+            raise ParsingError(f"PaddleOCR-VL API 请求失败：{exc}") from exc
+        if response.status_code >= 400:
+            raise ParsingError(
+                f"PaddleOCR-VL API 返回 HTTP {response.status_code}：{response.text[:1000]}"
+            )
+        try:
+            body = response.json()
+            pages = body["result"]["layoutParsingResults"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ParsingError("PaddleOCR-VL API 返回格式缺少 layoutParsingResults") from exc
+        blocks: list[PageBlock] = []
+        markdown_pages: list[str] = []
+        for index, page in enumerate(pages, 1):
+            markdown = page.get("markdown", {}) if isinstance(page, dict) else {}
+            text = str(markdown.get("text", "")).strip() if isinstance(markdown, dict) else ""
+            if text:
+                blocks.append(PageBlock(page=index, text=text, block_type="text", bbox=[]))
+                markdown_pages.append(text)
+            progress(
+                12 + (index / max(len(pages), 1)) * 45,
+                f"PaddleOCR-VL 解析 {index}/{len(pages)} 页",
+            )
+        if not blocks:
+            raise ParsingError("PaddleOCR-VL 未返回有效文本")
+        return ParsedDocument(
+            pages=len(pages),
+            blocks=blocks,
+            markdown="\n\n".join(markdown_pages),
+            parser_name="paddleocr-vl",
+            needs_ocr=True,
+        )
+
     def parse(
         self,
         path: Path,
         output_dir: Path,
         progress: ProgressCallback,
     ) -> ParsedDocument:
+        if self.pipeline() == "paddlevl":
+            return self._parse_paddlevl(path, progress)
         if self.settings.mineru_api_url:
             return self._parse_api(path, output_dir, progress)
         command = self.command()
@@ -587,13 +644,63 @@ class DocumentPipelineParser:
         if markdown_candidates:
             markdown_path = max(markdown_candidates, key=lambda path: path.stat().st_mtime)
             markdown = markdown_path.read_text(encoding="utf-8", errors="replace")
-        return ParsedDocument(
+        parsed = ParsedDocument(
             pages=max_page,
             blocks=blocks,
             markdown=markdown,
             parser_name=self.parser_name(),
             needs_ocr=True,
         )
+        self._normalize_output(output_dir, content_path.parent, parsed)
+        return parsed
+
+    def _normalize_output(
+        self,
+        output_dir: Path,
+        source_dir: Path,
+        parsed: ParsedDocument,
+    ) -> None:
+        """把不同解析后端的临时目录整理成统一的 parsed 目录。"""
+        image_dir = output_dir / "images"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        image_paths: dict[str, str] = {}
+        for block in parsed.blocks:
+            for image in block.images:
+                raw_path = image.get("path")
+                if not isinstance(raw_path, str) or not raw_path:
+                    continue
+                normalized_raw = raw_path.replace("\\", "/")
+                filename = Path(normalized_raw).name
+                if not filename:
+                    continue
+                candidates = [
+                    source_dir / normalized_raw,
+                    source_dir / "images" / filename,
+                    output_dir / normalized_raw,
+                ]
+                source_path = next(
+                    (candidate for candidate in candidates if candidate.is_file()),
+                    None,
+                )
+                if source_path is not None:
+                    target_path = image_dir / filename
+                    if source_path.resolve() != target_path.resolve():
+                        shutil.copy2(source_path, target_path)
+                image_paths[raw_path] = f"images/{filename}"
+                image_paths[normalized_raw] = f"images/{filename}"
+                image["path"] = f"images/{filename}"
+            for old_path, new_path in image_paths.items():
+                block.text = block.text.replace(old_path, new_path)
+        for old_path, new_path in image_paths.items():
+            parsed.markdown = parsed.markdown.replace(old_path, new_path)
+
+        for child in output_dir.iterdir():
+            if child.name == "images":
+                continue
+            if child.is_dir():
+                shutil.rmtree(child)
+            elif child.name not in {"document.md", "normalized.json"}:
+                child.unlink()
 
     def _has_output(self, output_dir: Path) -> bool:
         return any(output_dir.rglob("*content_list.json"))

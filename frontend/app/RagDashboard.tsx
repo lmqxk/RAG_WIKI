@@ -69,7 +69,24 @@ import {
 } from "@/components/ui/tooltip";
 import { MarkdownMessage } from "@/components/markdown-message";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+/** 未配置固定地址时，使用访问网页的设备主机名，支持局域网直连。 */
+function resolveApiBase(): string {
+  const configured = process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (configured) return configured;
+  if (typeof window === "undefined") return "http://127.0.0.1:8000";
+  const port = process.env.NEXT_PUBLIC_API_PORT ?? "8000";
+  return `${window.location.protocol}//${window.location.hostname}:${port}`;
+}
+
+const API_BASE = resolveApiBase();
+
+/** HTTP 局域网访问不是安全上下文，crypto.randomUUID 可能不可用。 */
+function createMessageId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 type Document = {
   id: string;
@@ -374,10 +391,10 @@ export function RagDashboard() {
       setNotice("请先上传并完成至少一份规范的解析。");
       return;
     }
-    const assistantId = crypto.randomUUID();
+    const assistantId = createMessageId();
     setMessages((current) => [
       ...current,
-      { id: crypto.randomUUID(), role: "user", content: trimmed },
+      { id: createMessageId(), role: "user", content: trimmed },
       { id: assistantId, role: "assistant", content: "" },
     ]);
     setQuestion("");

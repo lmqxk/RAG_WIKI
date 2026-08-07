@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     frontend_origin: str = "http://localhost:3000"
+    frontend_host: str = "127.0.0.1"
+    frontend_port: int = 3000
 
     data_dir: Path = PROJECT_ROOT / "storage"
     max_file_size_mb: int = 100
@@ -34,8 +36,8 @@ class Settings(BaseSettings):
     max_workers: int = 1
     document_parse_timeout_seconds: int = 1800
 
-    document_pipeline: Literal["pdf-extract-kit", "mineru", "rapidocr", "pymupdf"] = (
-        "pdf-extract-kit"
+    document_pipeline: Literal["paddlevl", "pdf-extract-kit", "mineru", "rapidocr", "pymupdf"] = (
+        "paddlevl"
     )
     ocr_render_dpi: int = 180
     mineru_command: str | None = None
@@ -46,6 +48,9 @@ class Settings(BaseSettings):
     mineru_ocr_lang: str = "ch"
     mineru_model_source: str = "modelscope"
     mineru_model_dir: Path = PROJECT_ROOT / ".models"
+    paddlevl_api_url: str | None = "http://127.0.0.1:8080"
+    paddlevl_auto_start: bool = True
+    paddlevl_compose_dir: Path = PROJECT_ROOT / "deploy" / "paddlevl"
 
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: str | None = None
@@ -54,10 +59,37 @@ class Settings(BaseSettings):
     chat_think: bool | None = None
     embedding_backend: str = "local"
     embedding_model: str | None = None
-    embedding_dimension: int = 512
+    embedding_base_url: str = "https://api.jina.ai/v1"
+    embedding_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("RAG_EMBEDDING_API_KEY", "JINA_API_KEY"),
+    )
+    embedding_dimension: int = 1024
     embedding_batch_size: int = 16
-    embedding_collection_name: str = "document_chunks_bge_small_zh_v1_5"
+    embedding_collection_name: str = "document_chunks_jina_embeddings_v5_small_v1"
     embedding_warmup_on_start: bool = True
+    embedding_fallback_enabled: bool = True
+    embedding_fallback_base_url: str = "https://api.siliconflow.cn/v1"
+    embedding_fallback_api_key: str | None = None
+    embedding_fallback_model: str = "BAAI/bge-large-zh-v1.5"
+    embedding_fallback_dimension: int = 1024
+    embedding_hf_fallback_enabled: bool = True
+    embedding_hf_api_token: str | None = None
+    embedding_hf_model: str = "BAAI/bge-small-zh-v1.5"
+    embedding_hf_provider: str = "hf-inference"
+    huggingface_fallback_enabled: bool = True
+    huggingface_embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    huggingface_api_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "RAG_HUGGINGFACEHUB_API_TOKEN",
+            "HUGGINGFACEHUB_API_TOKEN",
+        ),
+    )
+    embedding_hf_fallback_enabled: bool = True
+    embedding_hf_api_token: str | None = None
+    embedding_hf_model: str = "BAAI/bge-small-zh-v1.5"
+    embedding_hf_provider: str = "hf-inference"
     local_embedding_model_dir: Path = (
         PROJECT_ROOT
         / ".models"
@@ -68,8 +100,15 @@ class Settings(BaseSettings):
     local_embedding_device: str = "auto"
 
     rerank_base_url: str | None = "http://127.0.0.1:8011/rerank"
-    rerank_api_key: str | None = "local"
-    rerank_model: str | None = "jina-reranker-v3.5"
+    rerank_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("RAG_RERANK_API_KEY", "JINA_API_KEY"),
+    )
+    rerank_model: str | None = "jina-reranker-v3"
+    rerank_fallback_enabled: bool = True
+    rerank_fallback_url: str = "https://api.siliconflow.cn/v1/rerank"
+    rerank_fallback_api_key: str | None = None
+    rerank_fallback_model: str = "BAAI/bge-reranker-v2-m3"
     local_rerank_model_dir: Path = (
         PROJECT_ROOT
         / ".models"
@@ -110,6 +149,7 @@ class Settings(BaseSettings):
         self.qdrant_path = (self.qdrant_path or self.data_dir / "qdrant").resolve()
         self.mineru_model_dir = self.mineru_model_dir.resolve()
         self.mineru_compose_dir = self.mineru_compose_dir.resolve()
+        self.paddlevl_compose_dir = self.paddlevl_compose_dir.resolve()
         self.local_rerank_model_dir = self.local_rerank_model_dir.resolve()
         self.local_rerank_hf_home = self.local_rerank_hf_home.resolve()
         self.local_embedding_model_dir = self.local_embedding_model_dir.resolve()

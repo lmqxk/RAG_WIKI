@@ -117,6 +117,32 @@ def ensure_mineru(settings) -> bool:
     return ready
 
 
+def ensure_paddlevl(settings) -> bool:
+    if settings.document_pipeline != "paddlevl" or not settings.paddlevl_api_url:
+        return True
+    health_url = f"{settings.paddlevl_api_url.rstrip('/')}/health"
+    if wait_for(health_url, timeout=2):
+        print(f"PaddleOCR-VL API 已运行：{settings.paddlevl_api_url}")
+        return True
+    if not settings.paddlevl_auto_start:
+        print(f"PaddleOCR-VL API 未运行：{settings.paddlevl_api_url}")
+        return False
+    compose_file = settings.paddlevl_compose_dir / "compose.yaml"
+    if not compose_file.exists():
+        print(f"PaddleOCR-VL Compose 文件不存在：{compose_file}")
+        return False
+    try:
+        subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "up", "-d"],
+            cwd=settings.paddlevl_compose_dir,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"PaddleOCR-VL Compose 启动失败：{exc}")
+        return False
+    return wait_for(health_url, timeout=300)
+
+
 def main() -> int:
     missing = [path for path in (PYTHON, NODE, NPM_CLI) if not path.exists()]
     if missing:
@@ -126,12 +152,15 @@ def main() -> int:
         return 2
 
     settings = get_settings()
+    paddlevl_ready = ensure_paddlevl(settings)
     mineru_ready = ensure_mineru(settings)
     environment = os.environ.copy()
     environment.update(
         {
             "UV_CACHE_DIR": str(ROOT / ".tools" / "uv-cache"),
             "npm_config_cache": str(ROOT / ".tools" / "npm-cache"),
+            # 前端通过当前访问主机名拼接后端地址，端口由统一 RAG_API_PORT 控制。
+            "NEXT_PUBLIC_API_PORT": str(settings.api_port),
         }
     )
     rerank = None
@@ -157,15 +186,26 @@ def main() -> int:
             "uvicorn",
             "backend.main:app",
             "--host",
-            "127.0.0.1",
+            settings.api_host,
             "--port",
-            "8000",
+            str(settings.api_port),
         ],
         cwd=BACKEND,
         env=environment,
     )
     web = subprocess.Popen(
-        [str(NODE), str(NPM_CLI), "run", "dev"],
+        [
+            str(NODE),
+            str(NPM_CLI),
+            "run",
+            "dev",
+            "--",
+            "--hostname",
+            settings.frontend_host,
+            "--port",
+            str(settings.frontend_port),
+            "--strictPort",
+        ],
         cwd=FRONTEND,
         env={**environment, "PATH": f"{NODE.parent};{environment.get('PATH', '')}"},
     )
@@ -192,12 +232,12 @@ def main() -> int:
             )
             if rerank_ready:
                 warmup_rerank(settings)
-        api_ready = wait_for("http://127.0.0.1:8000/api/health")
-        web_ready = wait_for("http://127.0.0.1:3000/")
+        api_ready = wait_for(f"http://127.0.0.1:{settings.api_port}/api/health")
+        web_ready = wait_for(f"http://127.0.0.1:{settings.frontend_port}/")
         if api_ready and web_ready:
             print("\n规智库已启动：")
-            print("  Web: http://localhost:3000")
-            print("  API: http://127.0.0.1:8000/docs")
+            print(f"  Web: http://localhost:{settings.frontend_port}")
+            print(f"  API: http://127.0.0.1:{settings.api_port}/docs")
             if rerank is not None:
                 status = "已启动" if rerank_ready else "启动中/不可用，主后端会降级本地排序"
                 print(
@@ -208,6 +248,9 @@ def main() -> int:
             if settings.document_pipeline == "mineru":
                 status = "已启动" if mineru_ready else "未就绪，解析时会失败"
                 print(f"  MinerU API: {settings.mineru_api_url} ({status})")
+            if settings.document_pipeline == "paddlevl":
+                status = "已启动" if paddlevl_ready else "未就绪，解析时会失败"
+                print(f"  PaddleOCR-VL API: {settings.paddlevl_api_url} ({status})")
             print("按 Ctrl+C 停止服务。\n")
         else:
             print("服务启动超时，请查看上方日志。")

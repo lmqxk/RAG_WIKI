@@ -44,9 +44,16 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    // 与后端共用 RAG_FRONTEND_HOST/RAG_FRONTEND_PORT；端口占用时直接失败，
+    // 避免 Vite 自动切换到 3001 导致局域网访问错误端口。
+    server: {
+      host: process.env.RAG_FRONTEND_HOST ?? "0.0.0.0",
+      port: Number(process.env.RAG_FRONTEND_PORT ?? "3000"),
+      strictPort: true,
+      ...(isCodexSeatbeltSandbox
+        ? { watch: { useFsEvents: false, usePolling: true } }
+        : {}),
+    },
     plugins: [
       vinext(),
       sites(),

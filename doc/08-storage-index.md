@@ -107,13 +107,13 @@ Qdrant collection 配置：
 单文档重建：
 
 ```powershell
-curl -X POST http://127.0.0.1:8000/api/documents/{document_id}/reindex
+curl.exe -X POST http://127.0.0.1:8000/api/documents/{document_id}/reindex
 ```
 
 示例：
 
 ```powershell
-curl -X POST http://127.0.0.1:8000/api/documents/b7c7d518-3b70-4122-8f07-1faab100fc3a/reindex
+curl.exe -X POST http://127.0.0.1:8000/api/documents/b7c7d518-3b70-4122-8f07-1faab100fc3a/reindex
 ```
 
 重建流程会复用：

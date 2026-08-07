@@ -1,6 +1,6 @@
-﻿<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1180" viewBox="0 0 1680 1180" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1515" viewBox="0 0 1680 1515" role="img" aria-labelledby="title desc">
   <title id="title">规智库 RAG 当前技术架构图</title>
-  <desc id="desc">展示前端、后端 API、PDF-Extract-Kit 文档解析、本地 BGE 中文向量索引、Agentic RAG 的 LLM JSON 规划、并行召回、一次全局 Jina 重排、流式回答及性能日志。</desc>
+  <desc id="desc">展示规智库前端、FastAPI、PDF-Extract-Kit 与 MinerU Web API 双解析管线、Docker Compose 自动启动、统一 parsed 输出、SQLite FTS5、BGE 向量、Qdrant、Wiki 派生层、Agentic Planner、Jina 重排、回答 LLM、图片引用和性能日志。</desc>
   <defs>
     <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
       <path d="M2,2 L10,6 L2,10 Z" fill="#334155" />
@@ -30,9 +30,9 @@
     </style>
   </defs>
 
-  <rect x="0" y="0" width="1680" height="1180" fill="#f7f7f3" />
+  <rect x="0" y="0" width="1680" height="1515" fill="#f7f7f3" />
   <text x="60" y="54" class="title">规智库 RAG 当前技术架构图</text>
-  <text x="60" y="82" class="subtitle">当前默认：PDF-Extract-Kit 解析与 BGE 中文语义向量；共享 LLM 输出 JSON 检索计划和最终回答；多步骤并行召回后统一进行一次 Jina 重排。</text>
+  <text x="60" y="82" class="subtitle">解析可切换 PDF-Extract-Kit 或 MinerU Web API；RAG 启动时自动检查 Compose 服务；统一 parsed 输出后进入 SQLite、Qdrant、Wiki 与 Agentic RAG。</text>
 
   <!-- Startup and config -->
   <rect x="60" y="110" width="360" height="185" class="cluster" />
@@ -46,7 +46,7 @@
   <text x="270" y="212" class="text">config.py 默认值</text>
   <text x="270" y="232" class="small">.env 仅覆盖私密项</text>
   <rect x="85" y="252" width="310" height="30" class="note" />
-  <text x="101" y="272" class="small">默认拉起：API 8000、Web 3000、Rerank 8011</text>
+  <text x="101" y="272" class="small">自动检查：RAG API 8000、MinerU API 8001、Web 3000、Rerank 8011</text>
 
   <!-- Frontend -->
   <rect x="460" y="110" width="330" height="185" class="cluster" />
@@ -108,7 +108,7 @@
   <rect x="635" y="400" width="120" height="78" class="box-strong" />
   <text x="653" y="428" class="label">PDF-Extract</text>
   <text x="653" y="450" class="text">Kit 1.0</text>
-  <text x="653" y="470" class="small">当前默认</text>
+  <text x="653" y="470" class="small">pipeline，可切换</text>
 
   <rect x="90" y="520" width="190" height="82" class="box" />
   <text x="110" y="548" class="label">normalized.json</text>
@@ -124,7 +124,7 @@
   <text x="540" y="590" class="small">column_context / cell_text</text>
 
   <rect x="90" y="615" width="665" height="27" class="note" />
-  <text x="106" y="634" class="small">MinerU VLM 当前因 CUDA / torch wheel 兼容问题暂跳过；环境修好后可通过 Settings 切换管线。</text>
+  <text x="106" y="634" class="small">MinerU Web API：Docker Compose /health 检查，RAG_MINERU_API_URL=http://127.0.0.1:8001。</text>
 
   <!-- Index storage -->
   <rect x="830" y="340" width="790" height="315" class="cluster" />
@@ -142,9 +142,9 @@
   <text x="1270" y="450" class="text">BGE 512 维集合</text>
   <text x="1270" y="470" class="small">中文语义索引</text>
   <rect x="1440" y="400" width="150" height="82" class="box-muted" />
-  <text x="1460" y="428" class="label">Parsed Files</text>
-  <text x="1460" y="450" class="text">storage/parsed</text>
-  <text x="1460" y="470" class="small">md/json/images</text>
+  <text x="1460" y="428" class="label">统一 Parsed</text>
+  <text x="1460" y="450" class="text">storage/parsed/{id}</text>
+  <text x="1460" y="470" class="small">document.md / normalized.json / images</text>
 
   <rect x="860" y="520" width="730" height="82" class="box" />
   <text x="880" y="548" class="label">重建策略</text>
@@ -152,7 +152,7 @@
   <text x="880" y="592" class="text">reparse：重新跑 PDF-Extract-Kit，补齐解析、表格图片、normalized.json 新字段</text>
 
   <rect x="860" y="615" width="730" height="27" class="note" />
-  <text x="876" y="634" class="small">图片数据库当前不是独立 image 表，而是随 PageBlock.images 和 chunk preview_image_url 关联。</text>
+  <text x="876" y="634" class="small">Wiki：metadata、documents/*.md、concepts/*.md、overview.md、log.md、graph/related.json。</text>
 
   <!-- Retrieval and answer -->
   <rect x="60" y="700" width="1560" height="350" class="cluster" />
@@ -247,10 +247,65 @@
 
   <!-- config defaults legend -->
   <rect x="60" y="1085" width="1560" height="62" class="note" />
+
+  <!-- Wiki and retrieval detail -->
+  <rect x="60" y="1180" width="760" height="290" class="cluster" />
+  <text x="82" y="1212" class="cluster-title">Wiki 派生知识层：规划背景，不是最终证据</text>
+  <rect x="85" y="1238" width="150" height="72" class="box" />
+  <text x="105" y="1264" class="label">ParsedDocument</text>
+  <text x="105" y="1284" class="small">原文 + chunks</text>
+  <text x="105" y="1300" class="small">唯一事实来源</text>
+  <rect x="255" y="1238" width="160" height="72" class="box-strong" />
+  <text x="275" y="1264" class="label">WikiManager</text>
+  <text x="275" y="1284" class="small">LLM JSON 分析</text>
+  <text x="275" y="1300" class="small">失败则 fallback</text>
+  <rect x="435" y="1238" width="165" height="72" class="box" />
+  <text x="455" y="1264" class="label">metadata.json</text>
+  <text x="455" y="1284" class="small">summary / topics</text>
+  <text x="455" y="1300" class="small">concepts / chunk_id</text>
+  <rect x="620" y="1238" width="175" height="72" class="box-muted" />
+  <text x="640" y="1264" class="label">Wiki 页面集合</text>
+  <text x="640" y="1284" class="small">documents / concepts</text>
+  <text x="640" y="1300" class="small">overview / log / related</text>
+  <path d="M235 1274 H255" class="line" />
+  <path d="M415 1274 H435" class="line" />
+  <path d="M600 1274 H620" class="soft-line" />
+  <rect x="85" y="1330" width="710" height="112" class="note" />
+  <text x="105" y="1353" class="label">Planner 实际读取边界</text>
+  <text x="105" y="1375" class="text">数据库 READY 文档目录：id / title / standard_no / version / filename</text>
+  <text x="105" y="1395" class="text">Wiki metadata：summary / topics / concept 名称；不直接读取整篇 Markdown、PDF、图片</text>
+  <text x="105" y="1417" class="small">详细 Wiki 页面用于人工导航、显式 wikilink、related 图；未来通过 search_wiki 按需读取</text>
+
+  <rect x="840" y="1180" width="780" height="290" class="cluster" />
+  <text x="862" y="1212" class="cluster-title">检索规划与索引执行详图</text>
+  <rect x="865" y="1238" width="145" height="72" class="box" />
+  <text x="885" y="1264" class="label">用户问题</text>
+  <text x="885" y="1284" class="small">问题 + 文档范围</text>
+  <text x="885" y="1300" class="small">comparison 判断</text>
+  <rect x="1030" y="1238" width="155" height="72" class="box" />
+  <text x="1050" y="1264" class="label">QueryPlan</text>
+  <text x="1050" y="1284" class="small">代码基础规划</text>
+  <text x="1050" y="1300" class="small">类型 / 文档 / focused_query</text>
+  <rect x="1205" y="1238" width="175" height="72" class="box-strong" />
+  <text x="1225" y="1264" class="label">Planner LLM</text>
+  <text x="1225" y="1284" class="small">Wiki metadata + 目录</text>
+  <text x="1225" y="1300" class="small">JSON rewrites / steps</text>
+  <rect x="1400" y="1238" width="195" height="72" class="box" />
+  <text x="1420" y="1264" class="label">校验与执行器</text>
+  <text x="1420" y="1284" class="small">工具 / doc_ref / Query</text>
+  <text x="1420" y="1300" class="small">并行 ThreadPoolExecutor</text>
+  <path d="M1010 1274 H1030" class="line" />
+  <path d="M1185 1274 H1205" class="line" />
+  <path d="M1380 1274 H1400" class="line" />
+  <rect x="865" y="1330" width="730" height="112" class="note" />
+  <text x="885" y="1353" class="label">每个检索步骤的索引路径</text>
+  <text x="885" y="1375" class="text">search_general / search_in_document → SQLite FTS5 BM25 + Qdrant BGE 512D</text>
+  <text x="885" y="1395" class="text">多路候选 → exact clause（有条款号时）→ RRF 融合 → 去重 → 资料覆盖检查</text>
+  <text x="885" y="1417" class="small">覆盖不足时补充 Query；所有步骤完成后只调用一次 Jina Reranker，再交给 Answer LLM</text>
   <text x="82" y="1110" class="label">当前关键默认配置</text>
-  <text x="82" y="1134" class="mono">document_pipeline=pdf-extract-kit | embedding_backend=local | embedding_model=BAAI/bge-small-zh-v1.5 | embedding_dimension=512 | agentic_parallel_workers=4 | rerank_model=jina-reranker-v3.5</text>
+  <text x="82" y="1134" class="mono">document_pipeline=pdf-extract-kit|mineru | mineru_api_url=127.0.0.1:8001 | embedding=BGE-small-zh-v1.5(512D) | Qdrant Local | agentic_workers=4 | rerank=Jina-v3.5</text>
 
   <!-- tags -->
   <rect x="1415" y="44" width="185" height="28" class="tag-bg" />
-  <text x="1430" y="63" class="tag">Generated 2026-08-04</text>
+  <text x="1430" y="63" class="tag">Generated 2026-08-06</text>
 </svg>

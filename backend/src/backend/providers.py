@@ -118,12 +118,35 @@ class EmbeddingProvider:
 
     @property
     def semantic(self) -> bool:
-        return self.backend == "local" and self.local_available or self.external
+        return (
+            self.backend == "local" and self.local_available
+            or self.external
+            or self.fallback_external
+            or self.huggingface_external
+        )
 
     @property
     def external(self) -> bool:
         return self.backend == "openai" and bool(
-            self.settings.openai_api_key and self.settings.embedding_model
+            self.settings.embedding_api_key and self.settings.embedding_model
+        )
+
+    @property
+    def fallback_external(self) -> bool:
+        return self.settings.embedding_fallback_enabled and bool(
+            self.settings.embedding_fallback_api_key and self.settings.embedding_fallback_model
+        )
+
+    @property
+    def fallback_huggingface(self) -> bool:
+        return self.settings.embedding_hf_fallback_enabled and bool(
+            self.settings.embedding_hf_api_token and self.settings.embedding_hf_model
+        )
+
+    @property
+    def huggingface_external(self) -> bool:
+        return self.settings.huggingface_fallback_enabled and bool(
+            self.settings.huggingface_api_token and self.settings.huggingface_embedding_model
         )
 
     @property
@@ -139,7 +162,7 @@ class EmbeddingProvider:
         if self.backend == "local" and self.local_available:
             self.embed(["系统启动预热"])
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def _embed_primary(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         if self.external:
@@ -151,6 +174,33 @@ class EmbeddingProvider:
                 )
             return self._local_embed(texts)
         return [self._hash_embed(text) for text in texts]
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        try:
+            return self._embed_primary(texts)
+        except Exception as exc:
+            if self.huggingface_external:
+                try:
+                    return self._huggingface_embed(texts)
+                except (OSError, RuntimeError, ValueError, TypeError) as hf_exc:
+                    logger.warning("Hugging Face embedding fallback failed: %s", hf_exc)
+            if self.fallback_external:
+                logger.warning(
+                    "Primary embedding failed; falling back to %s: %s",
+                    self.settings.embedding_fallback_model,
+                    exc,
+                )
+                try:
+                    return self._fallback_embed(texts)
+                except (httpx.HTTPError, KeyError, ValueError, IndexError) as fallback_exc:
+                    logger.warning("SiliconFlow embedding fallback failed: %s", fallback_exc)
+            if self.fallback_huggingface:
+                logger.warning(
+                    "Falling back to Hugging Face model %s",
+                    self.settings.embedding_hf_model,
+                )
+                return self._huggingface_embed(texts)
+            raise
 
     def _local_embed(self, texts: list[str]) -> list[list[float]]:
         model, tokenizer, device, torch = self._load_local_model()
@@ -224,11 +274,11 @@ class EmbeddingProvider:
             self._device = None
 
     def _external_embed(self, texts: list[str]) -> list[list[float]]:
-        assert self.settings.openai_api_key
+        assert self.settings.embedding_api_key
         assert self.settings.embedding_model
         response = httpx.post(
-            f"{self.settings.openai_base_url.rstrip('/')}/embeddings",
-            headers={"Authorization": f"Bearer {self.settings.openai_api_key}"},
+            f"{self.settings.embedding_base_url.rstrip('/')}/embeddings",
+            headers={"Authorization": f"Bearer {self.settings.embedding_api_key}"},
             json={
                 "model": self.settings.embedding_model,
                 "input": texts,
@@ -243,6 +293,77 @@ class EmbeddingProvider:
         ]
         if any(len(vector) != self.settings.embedding_dimension for vector in vectors):
             raise ValueError("Embedding 返回维度与 RAG_EMBEDDING_DIMENSION 不一致")
+        return vectors
+
+    def _fallback_embed(self, texts: list[str]) -> list[list[float]]:
+        base_url = self.settings.embedding_fallback_base_url.rstrip("/")
+        embeddings_url = base_url if base_url.endswith("/embeddings") else f"{base_url}/embeddings"
+        response = httpx.post(
+            embeddings_url,
+            headers={"Authorization": f"Bearer {self.settings.embedding_fallback_api_key}"},
+            json={"model": self.settings.embedding_fallback_model, "input": texts},
+            timeout=120,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        vectors = [
+            item["embedding"] for item in sorted(payload["data"], key=lambda item: item["index"])
+        ]
+        expected = self.settings.embedding_dimension
+        if any(len(vector) != expected for vector in vectors):
+            actual = len(vectors[0]) if vectors else 0
+            raise ValueError(f"后备 Embedding 维度为 {actual}，当前索引要求 {expected}")
+        return vectors
+
+    def _huggingface_embed(self, texts: list[str]) -> list[list[float]]:
+        from huggingface_hub import InferenceClient
+
+        client = InferenceClient(
+            provider=self.settings.embedding_hf_provider,
+            api_key=self.settings.embedding_hf_api_token,
+        )
+        vectors: list[list[float]] = []
+        for text in texts:
+            result = client.feature_extraction(text, model=self.settings.embedding_hf_model)
+            vector = result.tolist() if hasattr(result, "tolist") else result
+            if vector and isinstance(vector[0], list):
+                vector = vector[0]
+            if not isinstance(vector, list) or not all(
+                isinstance(value, (int, float)) for value in vector
+            ):
+                raise ValueError("Hugging Face Embedding 返回格式不是一维向量")
+            vectors.append([float(value) for value in vector])
+        expected = self.settings.embedding_dimension
+        if any(len(vector) != expected for vector in vectors):
+            actual = len(vectors[0]) if vectors else 0
+            raise ValueError(f"Hugging Face Embedding 维度为 {actual}，当前索引要求 {expected}")
+        return vectors
+
+    def _huggingface_embed(self, texts: list[str]) -> list[list[float]]:
+        from huggingface_hub import InferenceClient
+
+        client = InferenceClient(
+            provider="hf-inference",
+            api_key=self.settings.huggingface_api_token,
+        )
+        vectors: list[list[float]] = []
+        for text in texts:
+            result = client.feature_extraction(
+                text,
+                model=self.settings.huggingface_embedding_model,
+            )
+            vector = result.tolist() if hasattr(result, "tolist") else result
+            if vector and isinstance(vector[0], list):
+                vector = vector[0]
+            if not isinstance(vector, list) or not all(
+                isinstance(value, (int, float)) for value in vector
+            ):
+                raise ValueError("Hugging Face Embedding 返回格式不是一维浮点向量")
+            vectors.append([float(value) for value in vector])
+        expected = self.settings.embedding_dimension
+        if any(len(vector) != expected for vector in vectors):
+            actual = len(vectors[0]) if vectors else 0
+            raise ValueError(f"Hugging Face Embedding 维度为 {actual}，当前索引要求 {expected}")
         return vectors
 
     def _hash_embed(self, text: str) -> list[float]:
@@ -279,9 +400,44 @@ class RerankProvider:
         if self.external:
             try:
                 return RerankResult(self._external_rerank(query, hits, top_n), True)
-            except httpx.HTTPError:
+            except (httpx.HTTPError, KeyError, ValueError, IndexError) as exc:
+                logger.warning("Primary rerank failed: %s", exc)
+                if self.settings.rerank_fallback_enabled and self.settings.rerank_fallback_api_key:
+                    try:
+                        return RerankResult(self._fallback_rerank(query, hits, top_n), True)
+                    except (httpx.HTTPError, KeyError, ValueError, IndexError) as fallback_exc:
+                        logger.warning("Fallback rerank failed: %s", fallback_exc)
                 return RerankResult(self._local_rerank(query, hits, top_n), False)
         return RerankResult(self._local_rerank(query, hits, top_n), False)
+
+    def _fallback_rerank(
+        self,
+        query: str,
+        hits: list[SearchHit],
+        top_n: int,
+    ) -> list[SearchHit]:
+        response = httpx.post(
+            self.settings.rerank_fallback_url,
+            headers={"Authorization": f"Bearer {self.settings.rerank_fallback_api_key}"},
+            json={
+                "model": self.settings.rerank_fallback_model,
+                "query": query,
+                "documents": [hit.text for hit in hits],
+                "top_n": top_n,
+                "return_documents": False,
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+        results = response.json().get("results", [])
+        ranked: list[SearchHit] = []
+        for item in results:
+            index = int(item["index"])
+            if 0 <= index < len(hits):
+                hit = hits[index]
+                hit.score = float(item.get("relevance_score", item.get("score", 0)))
+                ranked.append(hit)
+        return ranked[:top_n]
 
     def _local_rerank(
         self,
