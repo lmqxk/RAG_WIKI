@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,10 +21,19 @@ from .ingestion import IngestionManager
 from .providers import ChatProvider
 from .repository import Repository
 from .schemas import ChatResponse, Citation
+from .storage import StorageBackend
 
 STANDARD_RE = re.compile(r"(?i)\b((?:GB|JGJ|CJJ|DL|NB|JT|DB|Q)[/\s-]*T?[\s-]*\d{3,8}(?:-\d{4})?)\b")
 VERSION_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?:\s*年|\s*版)?")
 HTML_IMAGE_RE = re.compile(r"""<img[^>]+src=["']([^"']+)["']""", re.IGNORECASE)
+PDF_HEADER_SCAN_BYTES = 1024
+
+
+def validate_pdf_header(chunk: bytes) -> None:
+    """拒绝仅伪装成 .pdf 扩展名的非 PDF 上传。"""
+
+    if b"%PDF-" not in chunk[:PDF_HEADER_SCAN_BYTES]:
+        raise ValueError("文件不是有效的 PDF")
 
 
 @dataclass(slots=True)
@@ -280,34 +290,38 @@ class RagService:
         ingestion: IngestionManager,
         retriever: AgenticRetriever,
         chat_provider: ChatProvider,
+        storage: StorageBackend | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.ingestion = ingestion
         self.retriever = retriever
         self.chat_provider = chat_provider
+        self.storage = storage
 
-    async def upload(self, upload: UploadFile) -> tuple[dict[str, object], str, bool]:
+    async def upload(
+        self,
+        upload: UploadFile,
+        organization_id: str = "default-org",
+    ) -> tuple[dict[str, object], str, bool]:
         filename = Path(upload.filename or "").name
         if not filename.lower().endswith(".pdf"):
             raise ValueError("当前仅支持 PDF 文件")
         document_id = str(uuid4())
-        target = self.settings.data_dir / "uploads" / f"{document_id}.pdf"
-        digest = hashlib.sha256()
-        file_size = 0
         max_bytes = self.settings.max_file_size_mb * 1024 * 1024
-        with target.open("wb") as stream:
-            while chunk := await upload.read(1024 * 1024):
-                file_size += len(chunk)
-                if file_size > max_bytes:
-                    target.unlink(missing_ok=True)
-                    raise ValueError(f"文件超过当前 {self.settings.max_file_size_mb} MB 上限")
-                digest.update(chunk)
-                stream.write(chunk)
-        sha256 = digest.hexdigest()
-        duplicate = self.repository.get_document_by_hash(sha256)
+
+        # 使用存储后端保存（含 PDF 头校验）
+        sha256_bytes, file_size, stored_path = self.storage.save_pdf(
+            organization_id,
+            document_id,
+            upload,
+            max_bytes=max_bytes,
+        )
+        sha256 = sha256_bytes.hex()
+
+        duplicate = self.repository.get_document_by_hash(sha256, organization_id=organization_id)
         if duplicate:
-            target.unlink(missing_ok=True)
+            self.storage.delete_pdf(stored_path)
             duplicate_id = str(duplicate["id"])
             latest_job = self.repository.latest_job_for_document(duplicate_id)
             if latest_job and latest_job["status"] in {"QUEUED", "RUNNING"}:
@@ -327,19 +341,22 @@ class RagService:
                 job_id = str(uuid4())
                 self.repository.create_job(job_id, duplicate_id)
                 self.ingestion.submit(job_id)
-                duplicate = self.repository.get_document(duplicate_id) or duplicate
+                duplicate = self.repository.get_document(
+                    duplicate_id, organization_id=organization_id
+                ) or duplicate
             return duplicate, job_id, True
 
         title, standard_no, version = infer_metadata(filename)
         document = self.repository.create_document(
             document_id=document_id,
             filename=filename,
-            stored_path=target,
+            stored_path=Path(stored_path),
             sha256=sha256,
             title=title,
             standard_no=standard_no,
             version=version,
             file_size=file_size,
+            organization_id=organization_id,
         )
         job_id = str(uuid4())
         self.repository.create_job(job_id, document_id)
@@ -350,8 +367,9 @@ class RagService:
         self,
         document_id: str,
         upload: UploadFile,
+        organization_id: str = "default-org",
     ) -> tuple[dict[str, object], str]:
-        document = self.repository.get_document(document_id)
+        document = self.repository.get_document(document_id, organization_id=organization_id)
         if document is None:
             raise LookupError("document not found")
         active_job = self.repository.active_job_for_document(document_id)
@@ -362,55 +380,69 @@ class RagService:
         if not filename.lower().endswith(".pdf"):
             raise ValueError("当前仅支持 PDF 文件")
 
-        digest = hashlib.sha256()
-        chunks: list[bytes] = []
-        file_size = 0
+        stored_path = str(document.get("stored_path", ""))
         max_bytes = self.settings.max_file_size_mb * 1024 * 1024
-        while chunk := await upload.read(1024 * 1024):
-            file_size += len(chunk)
-            if file_size > max_bytes:
-                raise ValueError(f"文件超过当前 {self.settings.max_file_size_mb} MB 上限")
-            digest.update(chunk)
-            chunks.append(chunk)
 
-        sha256 = digest.hexdigest()
-        duplicate = self.repository.get_document_by_hash(sha256)
-        if duplicate and str(duplicate["id"]) != document_id:
-            raise ValueError("PDF already exists in another document")
+        # 使用存储后端原子替换
+        sha256_bytes, file_size, new_path, backup_path = self.storage.replace_pdf(
+            stored_path, upload, max_bytes=max_bytes,
+        )
+        sha256 = sha256_bytes.hex()
+        job_id: str | None = None
 
-        target = Path(str(document["stored_path"]))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("wb") as stream:
-            for chunk in chunks:
-                stream.write(chunk)
-
-        title, standard_no, version = infer_metadata(filename)
-        update_values: dict[str, object] = {
-            "filename": filename,
-            "sha256": sha256,
-            "file_size": file_size,
-            "status": "QUEUED",
-            "page_count": 0,
-            "needs_ocr": 0,
-            "parser_name": None,
-            "parsed_path": None,
-            "error": None,
-        }
-        if title:
-            update_values["title"] = title
-        if standard_no:
-            update_values["standard_no"] = standard_no
-        if version:
-            update_values["version"] = version
         try:
-            self.repository.update_document(document_id, **update_values)
-        except IntegrityError as exc:
-            raise ValueError("PDF already exists in another document") from exc
+            duplicate = self.repository.get_document_by_hash(sha256, organization_id=organization_id)
+            if duplicate and str(duplicate["id"]) != document_id:
+                # 恢复备份
+                self.storage.replace_pdf(stored_path, backup_path, max_bytes=max_bytes)
+                raise ValueError("PDF already exists in another document")
 
-        job_id = str(uuid4())
-        self.repository.create_job(job_id, document_id)
+            title, standard_no, version = infer_metadata(filename)
+            update_values: dict[str, object] = {
+                "filename": filename,
+                "sha256": sha256,
+                "file_size": file_size,
+                "status": "QUEUED",
+                "page_count": 0,
+                "needs_ocr": 0,
+                "parser_name": None,
+                "parsed_path": None,
+                "error": None,
+            }
+            if title:
+                update_values["title"] = title
+            if standard_no:
+                update_values["standard_no"] = standard_no
+            if version:
+                update_values["version"] = version
+
+            job_id = str(uuid4())
+            active_job, created = self.repository.create_job_if_idle(job_id, document_id)
+            if not created:
+                job_id = None
+                raise RuntimeError(f"document already has an active job: {active_job['id']}")
+
+            # 数据库更新；如果失败，存储后端已保留备份
+            self.repository.update_document(document_id, **update_values)
+
+        except IntegrityError as exc:
+            if job_id is not None:
+                self.repository.update_job(
+                    job_id, status="FAILED", stage="failed",
+                    message="重新解析准备失败", error=str(exc),
+                )
+            raise ValueError("PDF already exists in another document") from exc
+        except Exception as exc:
+            if job_id is not None:
+                self.repository.update_job(
+                    job_id, status="FAILED", stage="failed",
+                    message="重新解析准备失败", error=str(exc),
+                )
+            raise
+
+        assert job_id is not None
         self.ingestion.submit(job_id)
-        updated = self.repository.get_document(document_id)
+        updated = self.repository.get_document(document_id, organization_id=organization_id)
         if updated is None:
             raise RuntimeError("document update failed")
         return updated, job_id
@@ -419,8 +451,9 @@ class RagService:
         self,
         question: str,
         document_ids: list[str] | None,
+        organization_id: str | None = None,
     ) -> ChatResponse:
-        context = self.chat_context(question, document_ids)
+        context = self.chat_context(question, document_ids, organization_id=organization_id)
         answer = self.chat_provider.answer(question, context.hits, context.query_type).strip()
         return self.chat_response_from_context(context, answer)
 
@@ -428,9 +461,12 @@ class RagService:
         self,
         question: str,
         document_ids: list[str] | None,
+        organization_id: str | None = None,
     ) -> ChatContext:
         trace_id = str(uuid4())
-        agent_run = self.retriever.run(question, document_ids)
+        agent_run = self.retriever.run(
+            question, document_ids, organization_id=organization_id
+        )
         kind = agent_run.kind
         hits = agent_run.hits
         documents = {

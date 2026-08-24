@@ -25,6 +25,7 @@ import {
   Gauge,
   Home,
   Layers3,
+  LogOut,
   Menu,
   PanelRightOpen,
   Search,
@@ -68,6 +69,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { MarkdownMessage } from "@/components/markdown-message";
+import { useAuth, authOrgHeaders } from "./AuthContext";
 
 /** 未配置固定地址时，使用访问网页的设备主机名，支持局域网直连。 */
 function resolveApiBase(): string {
@@ -216,7 +218,14 @@ function mediaUrl(path: string) {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, init);
+  // 从 localStorage 直接读取，避免 hooks 规则限制
+  const token = typeof window !== "undefined" ? localStorage.getItem("rag_zb_auth_token") : null;
+  const orgId = typeof window !== "undefined" ? localStorage.getItem("rag_zb_org_id") || "default-org" : "default-org";
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string> | undefined),
+    ...authOrgHeaders(token, orgId),
+  };
+  const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     throw new Error(payload?.detail ?? `请求失败（${response.status}）`);
@@ -228,9 +237,15 @@ async function streamChat(
   payload: { question: string; document_ids?: string[] },
   onDelta: (text: string) => void,
 ): Promise<ChatResult> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("rag_zb_auth_token") : null;
+  const orgId = typeof window !== "undefined" ? localStorage.getItem("rag_zb_org_id") || "default-org" : "default-org";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...authOrgHeaders(token, orgId),
+  };
   const response = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
   });
   if (!response.ok || !response.body) {
@@ -310,6 +325,32 @@ export function RagDashboard() {
     Promise.all([loadDocuments(), api<Health>("/api/health").then(setHealth)]).catch((error) =>
       setNotice(error.message),
     );
+  }, []);
+
+  // SSE 实时任务更新
+  useEffect(() => {
+    const token = localStorage.getItem("rag_zb_auth_token");
+    const url = token
+      ? `${API_BASE}/api/events?token=${token}`
+      : `${API_BASE}/api/events`;
+    const es = new EventSource(url);
+    es.addEventListener("job_updated", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.job_id) {
+          // 从 /api/jobs/{id} 获取完整信息
+          api<Job>(`/api/jobs/${data.job_id}`).then((job) => {
+            setJobs((current) => ({ ...current, [job.document_id]: job }));
+            if (job.status === "COMPLETED" || job.status === "FAILED") {
+              loadDocuments();
+            }
+          }).catch(() => {});
+        }
+      } catch {
+        // ignore malformed events
+      }
+    });
+    return () => es.close();
   }, []);
 
   useEffect(() => {
@@ -669,7 +710,24 @@ function NavigationBody({
             : `${pipelineDisplayName(health?.document_pipeline)} 未就绪`}
         </p>
       </div>
+      <Separator className="my-2" />
+      <LogoutButton />
     </div>
+  );
+}
+
+function LogoutButton() {
+  const { logout, orgId } = useAuth();
+  return (
+    <Button
+      variant="ghost"
+      className="h-10 justify-start px-3 text-muted-foreground hover:text-destructive"
+      type="button"
+      onClick={logout}
+    >
+      <LogOut data-icon="inline-start" />
+      <span className="truncate">{orgId ? `退出 (${orgId})` : "退出登录"}</span>
+    </Button>
   );
 }
 

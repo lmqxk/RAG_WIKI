@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
 import math
 import re
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import Lock
+from urllib.parse import urlparse
 
 import httpx
 
@@ -24,6 +27,33 @@ prepare_torch_runtime()
 logger = logging.getLogger("uvicorn.error")
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*|[\u3400-\u9fff]")
+
+
+def _should_bypass_proxy(url: str) -> bool:
+    """本机和 RFC1918 私网服务直接连接，避免误走系统代理。"""
+    host = urlparse(url).hostname
+    if host == "localhost":
+        return True
+    try:
+        return bool(host) and (ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback)
+    except ValueError:
+        return False
+
+
+def _post(url: str, **kwargs: Any) -> httpx.Response:
+    timeout = kwargs.pop("timeout", None)
+    with httpx.Client(timeout=timeout, trust_env=not _should_bypass_proxy(url)) as client:
+        return client.post(url, **kwargs)
+
+
+@contextmanager
+def _stream(method: str, url: str, **kwargs: Any) -> Iterator[httpx.Response]:
+    timeout = kwargs.pop("timeout", None)
+    with httpx.Client(timeout=timeout, trust_env=not _should_bypass_proxy(url)) as client:
+        with client.stream(method, url, **kwargs) as response:
+            yield response
+
+
 ASCII_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*")
 HAN_SEQUENCE_RE = re.compile(r"[\u3400-\u9fff]+")
 IMAGE_PATH_RE = re.compile(r"images/[^\s\"'<>，。；)）]+", re.IGNORECASE)
@@ -276,7 +306,7 @@ class EmbeddingProvider:
     def _external_embed(self, texts: list[str]) -> list[list[float]]:
         assert self.settings.embedding_api_key
         assert self.settings.embedding_model
-        response = httpx.post(
+        response = _post(
             f"{self.settings.embedding_base_url.rstrip('/')}/embeddings",
             headers={"Authorization": f"Bearer {self.settings.embedding_api_key}"},
             json={
@@ -298,7 +328,7 @@ class EmbeddingProvider:
     def _fallback_embed(self, texts: list[str]) -> list[list[float]]:
         base_url = self.settings.embedding_fallback_base_url.rstrip("/")
         embeddings_url = base_url if base_url.endswith("/embeddings") else f"{base_url}/embeddings"
-        response = httpx.post(
+        response = _post(
             embeddings_url,
             headers={"Authorization": f"Bearer {self.settings.embedding_fallback_api_key}"},
             json={"model": self.settings.embedding_fallback_model, "input": texts},
@@ -416,7 +446,7 @@ class RerankProvider:
         hits: list[SearchHit],
         top_n: int,
     ) -> list[SearchHit]:
-        response = httpx.post(
+        response = _post(
             self.settings.rerank_fallback_url,
             headers={"Authorization": f"Bearer {self.settings.rerank_fallback_api_key}"},
             json={
@@ -463,7 +493,7 @@ class RerankProvider:
         assert self.settings.rerank_base_url
         assert self.settings.rerank_api_key
         assert self.settings.rerank_model
-        response = httpx.post(
+        response = _post(
             self.settings.rerank_base_url,
             headers={"Authorization": f"Bearer {self.settings.rerank_api_key}"},
             json={
@@ -531,7 +561,7 @@ class ChatProvider:
 
         for attempt in range(3):
             try:
-                response = httpx.post(
+                response = _post(
                     f"{self.settings.openai_base_url.rstrip('/')}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {self.settings.openai_api_key}",
@@ -593,7 +623,7 @@ class ChatProvider:
         query_type: str,
     ) -> str:
         payload = self._chat_payload(question, hits, query_type)
-        response = httpx.post(
+        response = _post(
             f"{self.settings.openai_base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {self.settings.openai_api_key}"},
             json=payload,
@@ -618,7 +648,7 @@ class ChatProvider:
         assert self.settings.chat_model
         payload = self._chat_payload(question, hits, query_type)
         payload["stream"] = True
-        with httpx.stream(
+        with _stream(
             "POST",
             f"{self.settings.openai_base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {self.settings.openai_api_key}"},

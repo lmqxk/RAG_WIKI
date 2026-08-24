@@ -18,6 +18,7 @@ frontend/.wrangler/
 
 # 运行数据
 storage/
+logs/
 *.db
 *.db-shm
 *.db-wal

@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://localhost:3000"
     frontend_host: str = "127.0.0.1"
     frontend_port: int = 3000
+    auth_enabled: bool = False
+    auth_jwt_secret: str | None = None
+    auth_access_token_minutes: int = 60
+    auth_bootstrap_username: str | None = None
+    auth_bootstrap_password: str | None = None
 
     data_dir: Path = PROJECT_ROOT / "storage"
     max_file_size_mb: int = 100
@@ -142,6 +147,21 @@ class Settings(BaseSettings):
 
     sqlite_path: Path | None = Field(default=None)
     qdrant_path: Path | None = Field(default=None)
+    qdrant_url: str | None = Field(default=None)
+    qdrant_api_key: str | None = Field(default=None)
+    database_url: str | None = Field(default=None)
+
+    # 对象存储
+    storage_backend: str | None = Field(default=None)  # "local" 或 "s3"
+    s3_endpoint: str | None = Field(default=None)
+    s3_bucket: str = "rag-zb"
+    s3_access_key: str | None = Field(default=None)
+    s3_secret_key: str | None = Field(default=None)
+    s3_region: str | None = Field(default=None)
+
+    # 任务队列
+    task_backend: str | None = Field(default=None)  # "threadpool" 或 "celery"
+    redis_url: str | None = Field(default=None)
 
     def model_post_init(self, __context: object) -> None:
         self.data_dir = self.data_dir.resolve()
@@ -153,17 +173,29 @@ class Settings(BaseSettings):
         self.local_rerank_model_dir = self.local_rerank_model_dir.resolve()
         self.local_rerank_hf_home = self.local_rerank_hf_home.resolve()
         self.local_embedding_model_dir = self.local_embedding_model_dir.resolve()
+        if self.database_url and self.database_url.startswith("sqlite"):
+            sqlite_path = self.database_url.removeprefix("sqlite:///")
+            self.sqlite_path = Path(sqlite_path).resolve()
+
+    @property
+    def qdrant_is_remote(self) -> bool:
+        """是否使用远程 Qdrant Server。"""
+        return bool(self.qdrant_url)
 
     def ensure_directories(self) -> None:
-        for path in (
+        paths = [
             self.data_dir,
             self.data_dir / "uploads",
             self.data_dir / "parsed",
             self.data_dir / "wiki",
-            self.data_dir / "qdrant",
             self.mineru_model_dir,
             self.local_rerank_hf_home,
-        ):
+        ]
+        if not self.qdrant_is_remote:
+            paths.append(self.data_dir / "qdrant")
+        if self.storage_backend == "s3":
+            paths.append(self.data_dir / ".s3-cache")
+        for path in paths:
             path.mkdir(parents=True, exist_ok=True)
 
 

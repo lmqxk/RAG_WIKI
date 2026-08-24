@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -32,6 +33,30 @@ class ParsingError(RuntimeError):
 
 
 IMAGE_PATH_RE = re.compile(r"""<img[^>]+src=["']([^"']+)["']""", re.IGNORECASE)
+MAX_MINERU_ZIP_MEMBERS = 5000
+MAX_MINERU_ZIP_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
+
+
+def extract_zip_safely(archive: zipfile.ZipFile, output_dir: Path) -> None:
+    """安全解压不可信 ZIP，阻止路径穿越、符号链接和压缩炸弹。"""
+
+    members = archive.infolist()
+    if len(members) > MAX_MINERU_ZIP_MEMBERS:
+        raise ParsingError("MinerU ZIP 文件数量超过安全上限")
+    if sum(member.file_size for member in members) > MAX_MINERU_ZIP_UNCOMPRESSED_BYTES:
+        raise ParsingError("MinerU ZIP 解压后大小超过安全上限")
+
+    root = output_dir.resolve()
+    for member in members:
+        mode = member.external_attr >> 16
+        if stat.S_ISLNK(mode):
+            raise ParsingError("MinerU ZIP 不允许包含符号链接")
+        destination = (root / member.filename).resolve()
+        try:
+            destination.relative_to(root)
+        except ValueError as exc:
+            raise ParsingError("MinerU ZIP 包含非法解压路径") from exc
+    archive.extractall(root)
 
 
 def _clean_cell_text(text: str) -> str:
@@ -582,7 +607,7 @@ class DocumentPipelineParser:
             raise ParsingError(f"MinerU Web API 未返回 ZIP 解析结果：{detail}")
         try:
             with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-                archive.extractall(output_dir)
+                extract_zip_safely(archive, output_dir)
         except (OSError, zipfile.BadZipFile) as exc:
             raise ParsingError(f"MinerU Web API 结果 ZIP 无法读取：{exc}") from exc
         progress(57, "读取 MinerU Web API 结构化结果")

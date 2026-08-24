@@ -88,3 +88,28 @@ def test_get_chunks_only_returns_ready_documents(tmp_path: Path) -> None:
     repository.update_document("doc-1", status="READY")
 
     assert [hit.chunk_id for hit in repository.get_chunks(["chunk-1"])] == ["chunk-1"]
+
+
+def test_create_job_if_idle_reuses_existing_active_job(tmp_path: Path) -> None:
+    database = Database(tmp_path / "test.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.create_document(
+        document_id="doc-1",
+        filename="规范.pdf",
+        stored_path=tmp_path / "规范.pdf",
+        sha256="abc",
+        title="建筑防火通用规范",
+        standard_no="GB 55037-2022",
+        version="2022",
+        file_size=10,
+    )
+
+    first, created = repository.create_job_if_idle("job-1", "doc-1")
+    second, created_again = repository.create_job_if_idle("job-2", "doc-1")
+
+    assert created is True
+    assert first["id"] == "job-1"
+    assert created_again is False
+    assert second["id"] == "job-1"
+    assert repository.get_job("job-2") is None

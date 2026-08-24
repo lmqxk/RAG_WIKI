@@ -13,10 +13,78 @@ from .config import Settings
 from .domain import Chunk, PageBlock, ParsedDocument
 from .parser import DocumentParser
 from .repository import Repository
+from .storage import StorageBackend
 from .vector_index import VectorIndex
 from .wiki import WikiManager
 
 logger = logging.getLogger(__name__)
+
+
+# ── 模块级工具函数（供 Celery 任务和 IngestionManager 共用） ────────────────
+
+
+def save_parsed_output(output_dir: Path, parsed: ParsedDocument) -> None:
+    """将解析结果写入磁盘（normalized.json + document.md）。"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    normalized = {
+        "pages": parsed.pages,
+        "parser_name": parsed.parser_name,
+        "needs_ocr": parsed.needs_ocr,
+        "blocks": [
+            {
+                "page": block.page,
+                "text": block.text,
+                "type": block.block_type,
+                "bbox": block.bbox,
+                "level": block.level,
+                "printed_page": block.printed_page,
+                "images": block.images,
+            }
+            for block in parsed.blocks
+        ],
+    }
+    (output_dir / "normalized.json").write_text(
+        json.dumps(normalized, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "document.md").write_text(parsed.markdown, encoding="utf-8")
+
+
+def load_parsed_payload(parsed_dir: Path) -> dict | None:
+    """从解析产物目录读取 normalized.json。"""
+    normalized_path = parsed_dir / "normalized.json"
+    if not normalized_path.exists():
+        return None
+    return json.loads(normalized_path.read_text(encoding="utf-8"))
+
+
+def build_parsed_from_payload(
+    payload: dict,
+    blocks: list[PageBlock] | None = None,
+) -> ParsedDocument:
+    """从 payload 重建 ParsedDocument 对象。"""
+    from .domain import PageBlock as PB
+
+    if blocks is None:
+        blocks = [
+            PB(
+                page=int(b["page"]),
+                text=str(b["text"]),
+                block_type=str(b.get("type", "text")),
+                bbox=[float(v) for v in b.get("bbox", [])],
+                level=b.get("level"),
+                printed_page=b.get("printed_page"),
+                images=list(b.get("images", [])),
+            )
+            for b in payload.get("blocks", [])
+        ]
+    return ParsedDocument(
+        pages=int(payload.get("pages", 0)),
+        blocks=blocks,
+        markdown=payload.get("markdown", ""),
+        parser_name=str(payload.get("parser_name", "unknown")),
+        needs_ocr=bool(payload.get("needs_ocr", False)),
+    )
 
 
 class IngestionManager:
@@ -27,17 +95,24 @@ class IngestionManager:
         parser: DocumentParser,
         vector_index: VectorIndex,
         wiki: WikiManager | None = None,
+        storage: StorageBackend | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.parser = parser
         self.vector_index = vector_index
         self.wiki = wiki
-        self.executor = ThreadPoolExecutor(
-            max_workers=settings.max_workers,
-            thread_name_prefix="rag-ingestion",
-        )
-        self.running: set[str] = set()
+        self.storage = storage
+        self._use_celery = settings.task_backend == "celery"
+        if self._use_celery:
+            self.executor = None
+            self.running: set[str] = set()
+        else:
+            self.executor = ThreadPoolExecutor(
+                max_workers=settings.max_workers,
+                thread_name_prefix="rag-ingestion",
+            )
+            self.running: set[str] = set()
 
     def recover(self) -> None:
         for job in self.repository.pending_jobs():
@@ -47,16 +122,27 @@ class IngestionManager:
         if job_id in self.running:
             return
         self.running.add(job_id)
-        self.executor.submit(self._process, job_id)
+        if self._use_celery:
+            from .tasks import process_document
+
+            process_document.delay(job_id)
+        else:
+            self.executor.submit(self._process, job_id)
 
     def submit_reindex(self, job_id: str) -> None:
         if job_id in self.running:
             return
         self.running.add(job_id)
-        self.executor.submit(self._reindex, job_id)
+        if self._use_celery:
+            from .tasks import reindex_document
+
+            reindex_document.delay(job_id)
+        else:
+            self.executor.submit(self._reindex, job_id)
 
     def shutdown(self) -> None:
-        self.executor.shutdown(wait=False, cancel_futures=False)
+        if self.executor is not None:
+            self.executor.shutdown(wait=False, cancel_futures=False)
 
     def _process(self, job_id: str) -> None:
         try:
@@ -67,6 +153,7 @@ class IngestionManager:
             document = self.repository.get_document(document_id)
             if document is None:
                 raise RuntimeError("文档记录不存在")
+            organization_id = str(document.get("organization_id", "default-org"))
             self.repository.update_job(
                 job_id,
                 status="RUNNING",
@@ -76,7 +163,7 @@ class IngestionManager:
             )
             self.repository.update_document(document_id, status="PARSING", error=None)
 
-            parsed_dir = self.settings.data_dir / "parsed" / document_id
+            parsed_dir = self.settings.data_dir / "parsed" / organization_id / document_id
 
             last_parse_progress = 2.0
 
@@ -91,14 +178,20 @@ class IngestionManager:
                     message=message,
                 )
 
-            parsed = self.parser.parse(Path(str(document["stored_path"])), parsed_dir, progress)
-            self._save_parsed(parsed_dir, parsed)
+            parsed = self.parser.parse(
+                self.storage.get_pdf_path(str(document["stored_path"])),
+                parsed_dir,
+                progress,
+            )
+            save_parsed_output(parsed_dir, parsed)
+            # 上传解析产物到存储后端
+            parsed_path = self.storage.save_parsed(organization_id, document_id, parsed_dir)
             self.repository.update_document(
                 document_id,
                 page_count=parsed.pages,
                 needs_ocr=int(parsed.needs_ocr),
                 parser_name=parsed.parser_name,
-                parsed_path=str(parsed_dir),
+                parsed_path=parsed_path,
                 status="INDEXING",
             )
 
@@ -112,8 +205,6 @@ class IngestionManager:
             chunks = build_chunks(document_id, parsed.blocks)
             if not chunks:
                 raise RuntimeError("解析完成但未生成有效条款，请检查 PDF 解析结果")
-            self.repository.replace_chunks(document_id, chunks)
-
             self.repository.update_job(
                 job_id,
                 status="RUNNING",
@@ -121,7 +212,14 @@ class IngestionManager:
                 progress=72,
                 message=f"建立混合检索索引，共 {len(chunks)} 个片段",
             )
-            self.vector_index.replace_document(document_id, chunks)
+            vector_snapshot = self.vector_index.replace_document(
+                document_id, chunks, organization_id=organization_id
+            )
+            try:
+                self.repository.replace_chunks(document_id, chunks)
+            except Exception:
+                self.vector_index.restore_document(document_id, vector_snapshot)
+                raise
             if self.wiki:
                 self.repository.update_job(
                     job_id,
@@ -167,9 +265,10 @@ class IngestionManager:
             document = self.repository.get_document(document_id)
             if document is None or not document.get("parsed_path"):
                 raise RuntimeError("没有可复用的结构化解析结果，请重新上传文档")
-            parsed_path = Path(str(document["parsed_path"]))
-            normalized_path = parsed_path / "normalized.json"
-            if not normalized_path.exists():
+            organization_id = str(document.get("organization_id", "default-org"))
+            parsed_path = self.storage.get_parsed_path(str(document["parsed_path"]))
+            payload = load_parsed_payload(parsed_path)
+            if payload is None:
                 raise RuntimeError("结构化解析结果不存在，请重新上传文档")
 
             self.repository.update_document(document_id, status="INDEXING", error=None)
@@ -180,7 +279,6 @@ class IngestionManager:
                 progress=40,
                 message="复用解析结果，重新识别章节与条款",
             )
-            payload = json.loads(normalized_path.read_text(encoding="utf-8"))
             blocks = [
                 PageBlock(
                     page=int(block["page"]),
@@ -196,7 +294,6 @@ class IngestionManager:
             chunks = build_chunks(document_id, blocks)
             if not chunks:
                 raise RuntimeError("重新切片后没有生成有效条款")
-            self.repository.replace_chunks(document_id, chunks)
             self.repository.update_job(
                 job_id,
                 status="RUNNING",
@@ -204,17 +301,20 @@ class IngestionManager:
                 progress=72,
                 message=f"重建混合检索索引，共 {len(chunks)} 个片段",
             )
-            self.vector_index.replace_document(document_id, chunks)
+            vector_snapshot = self.vector_index.replace_document(
+                document_id, chunks, organization_id=organization_id
+            )
+            try:
+                self.repository.replace_chunks(document_id, chunks)
+            except Exception:
+                self.vector_index.restore_document(document_id, vector_snapshot)
+                raise
             if self.wiki:
-                parsed = ParsedDocument(
-                    pages=int(payload.get("pages", 0)),
-                    blocks=blocks,
-                    markdown=(parsed_path / "document.md").read_text(encoding="utf-8")
-                    if (parsed_path / "document.md").exists()
-                    else "",
-                    parser_name=str(payload.get("parser_name", "unknown")),
-                    needs_ocr=bool(payload.get("needs_ocr", False)),
-                )
+                parsed_doc = build_parsed_from_payload(payload, blocks=blocks)
+                # 补充 markdown 内容
+                md_path = parsed_path / "document.md"
+                if md_path.exists():
+                    parsed_doc.markdown = md_path.read_text(encoding="utf-8")
                 self.repository.update_job(
                     job_id,
                     status="RUNNING",
@@ -222,7 +322,7 @@ class IngestionManager:
                     progress=88,
                     message="基于已有解析结果生成 Wiki 知识页",
                 )
-                self._sync_wiki(document, parsed, chunks, event="reindex")
+                self._sync_wiki(document, parsed_doc, chunks, event="reindex")
             self.repository.update_document(document_id, status="READY", error=None)
             self.repository.update_job(
                 job_id,
@@ -248,31 +348,6 @@ class IngestionManager:
             )
         finally:
             self.running.discard(job_id)
-
-    def _save_parsed(self, output_dir: Path, parsed: ParsedDocument) -> None:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        normalized = {
-            "pages": parsed.pages,
-            "parser_name": parsed.parser_name,
-            "needs_ocr": parsed.needs_ocr,
-            "blocks": [
-                {
-                    "page": block.page,
-                    "text": block.text,
-                    "type": block.block_type,
-                    "bbox": block.bbox,
-                    "level": block.level,
-                    "printed_page": block.printed_page,
-                    "images": block.images,
-                }
-                for block in parsed.blocks
-            ],
-        }
-        (output_dir / "normalized.json").write_text(
-            json.dumps(normalized, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        (output_dir / "document.md").write_text(parsed.markdown, encoding="utf-8")
 
     def _sync_wiki(
         self,

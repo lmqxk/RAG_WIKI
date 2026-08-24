@@ -26,7 +26,10 @@ def make_hit(chunk_id: str, document_id: str, score: float = 0.8) -> SearchHit:
 
 
 class FakeRepository:
-    def list_documents(self) -> list[dict[str, object]]:
+    def list_documents(
+        self,
+        organization_id: str | None = None,
+    ) -> list[dict[str, object]]:
         return [
             {
                 "id": "new",
@@ -71,6 +74,7 @@ class FakeHybridRetriever:
         self,
         question: str,
         document_ids: list[str] | None,
+        organization_id: str | None = None,
     ) -> tuple[str, list[SearchHit]]:
         with self.lock:
             self.calls.append((question, tuple(document_ids) if document_ids else None))
@@ -82,6 +86,7 @@ class FakeHybridRetriever:
         document_ids: list[str] | None,
         *,
         rerank: bool = True,
+        organization_id: str | None = None,
     ) -> list[SearchHit]:
         scope = tuple(document_ids) if document_ids else None
         with self.lock:

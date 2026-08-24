@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from .config import Settings
 from .domain import Chunk, ParsedDocument, SearchHit
 from .prompt import WIKI_ANALYSIS_SYSTEM_PROMPT, WIKI_OVERVIEW_SYSTEM_PROMPT
+from .storage import StorageBackend
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 COMPUTED_RELATED_RE = re.compile(
@@ -35,9 +36,15 @@ class JsonGenerator(Protocol):
 class WikiManager:
     """维护 storage/wiki，所有页面均可回链至 parsed 与 chunk。"""
 
-    def __init__(self, settings: Settings, generator: JsonGenerator) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        generator: JsonGenerator,
+        storage: StorageBackend | None = None,
+    ) -> None:
         self.settings = settings
         self.generator = generator
+        self.storage = storage
         self.root = settings.data_dir / "wiki"
         self.documents_dir = self.root / "documents"
         self.concepts_dir = self.root / "concepts"
@@ -45,6 +52,11 @@ class WikiManager:
         self.graph_dir = self.root / "graph"
         for path in (self.documents_dir, self.concepts_dir, self.metadata_dir, self.graph_dir):
             path.mkdir(parents=True, exist_ok=True)
+
+    def _sync_storage(self) -> None:
+        """将 Wiki 数据同步到存储后端（S3 等）。"""
+        if self.storage is not None:
+            self.storage.save_wiki(self.root)
 
     def sync_document(
         self,
@@ -59,12 +71,14 @@ class WikiManager:
         if not self.settings.wiki_enabled:
             return
         document_id = str(document["id"])
+        org_id = str(document.get("organization_id", "default-org"))
         analysis = self._analyze(document, parsed, chunks)
         metadata: dict[str, object] = {
             "schema_version": 1,
             "generated_at": _utc_now(),
             "document": {
                 "id": document_id,
+                "organization_id": org_id,
                 "title": str(document.get("title") or document.get("filename") or document_id),
                 "filename": document.get("filename"),
                 "standard_no": document.get("standard_no"),
@@ -74,8 +88,8 @@ class WikiManager:
                 "parser_name": parsed.parser_name,
             },
             "source": {
-                "parsed_path": f"parsed/{document_id}",
-                "normalized_path": f"parsed/{document_id}/normalized.json",
+                "parsed_path": f"parsed/{org_id}/{document_id}",
+                "normalized_path": f"parsed/{org_id}/{document_id}/normalized.json",
                 "chunk_count": len(chunks),
             },
             "analysis": analysis,
@@ -87,6 +101,7 @@ class WikiManager:
         self._rebuild_overview()
         self._rebuild_related()
         self._append_log(event, metadata)
+        self._sync_storage()
 
     def catalog_context(
         self,
@@ -190,7 +205,7 @@ class WikiManager:
             f"document_id: {document_id}",
             f"standard_no: {document.get('standard_no') or ''}",
             f"version: {document.get('version') or ''}",
-            f"source: ../parsed/{document_id}/normalized.json",
+            f"source: ../{metadata.get('source', {}).get('normalized_path', f'parsed/{document_id}/normalized.json')}",
             "status: generated",
             "---",
             "",

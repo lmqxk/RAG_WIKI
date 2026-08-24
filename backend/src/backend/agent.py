@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .config import Settings
 from .domain import SearchHit
 from .prompt import PLANNER_SYSTEM_PROMPT
-from .repository import Repository
+from .repository import DEFAULT_ORGANIZATION_ID, Repository
 from .retrieval import (
     HybridRetriever,
     QueryPlan,
@@ -116,18 +116,22 @@ class AgenticRetriever:
         self,
         question: str,
         document_ids: Sequence[str] | None,
+        organization_id: str | None = None,
     ) -> tuple[str, list[SearchHit]]:
-        result = self.run(question, document_ids)
+        result = self.run(question, document_ids, organization_id=organization_id)
         return result.kind, result.hits
 
     def run(
         self,
         question: str,
         document_ids: Sequence[str] | None,
+        organization_id: str | None = None,
     ) -> AgentRun:
         if not self.settings.agentic_retrieval_enabled:
             started_at = time.perf_counter()
-            kind, hits = self.retriever.retrieve(question, document_ids)
+            kind, hits = self.retriever.retrieve(
+                question, document_ids, organization_id=organization_id
+            )
             if self.wiki:
                 self.wiki.log_query(question, kind, hits)
             return AgentRun(
@@ -139,12 +143,12 @@ class AgenticRetriever:
             )
 
         planner_started_at = time.perf_counter()
-        planned = self._plan_steps(question, document_ids)
+        planned = self._plan_steps(question, document_ids, organization_id=organization_id)
         planner_ms = (time.perf_counter() - planner_started_at) * 1000
         plan = planned.plan
         steps = planned.steps
         recall_started_at = time.perf_counter()
-        hits = self._execute_steps(steps)
+        hits = self._execute_steps(steps, organization_id=organization_id)
         supplemented = False
 
         if self._needs_supplement(plan, hits):
@@ -153,7 +157,7 @@ class AgenticRetriever:
             supplement_steps = supplement_steps[:remaining]
             if supplement_steps:
                 steps.extend(supplement_steps)
-                hits.extend(self._execute_steps(supplement_steps))
+                hits.extend(self._execute_steps(supplement_steps, organization_id=organization_id))
                 supplemented = True
         recall_ms = (time.perf_counter() - recall_started_at) * 1000
 
@@ -177,8 +181,11 @@ class AgenticRetriever:
         self,
         question: str,
         document_ids: Sequence[str] | None,
+        organization_id: str | None = None,
     ) -> PlannerResult:
-        documents = self.repository.list_documents()
+        documents = self.repository.list_documents(
+            organization_id=organization_id or DEFAULT_ORGANIZATION_ID
+        )
         plan = plan_query(question, document_ids, documents)
         llm_steps = self._llm_initial_steps(question, plan, documents)
         if llm_steps:
@@ -327,24 +334,42 @@ class AgenticRetriever:
             )
         ]
 
-    def _execute_steps(self, steps: Sequence[AgentStep]) -> list[SearchHit]:
+    def _execute_steps(
+        self,
+        steps: Sequence[AgentStep],
+        organization_id: str | None = None,
+    ) -> list[SearchHit]:
         if not steps:
             return []
         if len(steps) == 1 or self.settings.agentic_parallel_workers <= 1:
-            return self._execute_step(steps[0])
+            return self._execute_step(steps[0], organization_id=organization_id)
         max_workers = min(
             len(steps),
             max(1, self.settings.agentic_parallel_workers),
         )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(self._execute_step, steps))
+            results = list(
+                executor.map(
+                    lambda step: self._execute_step(step, organization_id=organization_id),
+                    steps,
+                )
+            )
         hits: list[SearchHit] = []
         for step_hits in results:
             hits.extend(step_hits)
         return hits
 
-    def _execute_step(self, step: AgentStep) -> list[SearchHit]:
-        return self.retriever._retrieve_scope(step.query, step.document_ids, rerank=False)
+    def _execute_step(
+        self,
+        step: AgentStep,
+        organization_id: str | None = None,
+    ) -> list[SearchHit]:
+        return self.retriever._retrieve_scope(
+            step.query,
+            step.document_ids,
+            rerank=False,
+            organization_id=organization_id,
+        )
 
     def _needs_supplement(self, plan: QueryPlan, hits: Sequence[SearchHit]) -> bool:
         if not hits:

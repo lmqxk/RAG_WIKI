@@ -49,7 +49,29 @@ class DocumentMetadataUpdate(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=2, max_length=2000)
-    document_ids: list[str] | None = None
+    document_ids: list[str] | None = Field(default=None, max_length=20)
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=100)
+    password: str = Field(min_length=8, max_length=256)
+
+
+class AccessTokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=100)
+    password: str = Field(min_length=8, max_length=256)
+    organization_id: str | None = Field(default=None)
+
+
+class RegisterOut(BaseModel):
+    id: str
+    username: str
+    message: str = "注册成功"
 
 
 class Citation(BaseModel):
@@ -83,6 +105,7 @@ class HealthOut(BaseModel):
     status: str
     app: str
     version: str
+    auth_enabled: bool = False
     llm_configured: bool
     embedding_configured: bool
     embedding_backend: str
@@ -91,3 +114,46 @@ class HealthOut(BaseModel):
     mineru_available: bool
     rapidocr_available: bool
     document_pipeline: str
+
+
+# ── 组织管理 ──────────────────────────────────────────────────────────────
+
+
+class OrganizationOut(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+
+
+class CreateOrganizationRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class MemberOut(BaseModel):
+    organization_id: str
+    user_id: str
+    username: str
+    role: str
+    created_at: datetime
+
+
+class AddMemberRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=100)
+    role: str = Field(pattern=r"^(admin|editor|viewer)$")
+
+
+class UpdateMemberRoleRequest(BaseModel):
+    role: str = Field(pattern=r"^(admin|editor|viewer)$")
+
+
+class AuditLogOut(BaseModel):
+    id: str
+    organization_id: str
+    user_id: str
+    username: str
+    action: str
+    resource_type: str
+    resource_id: str | None = None
+    detail: str | None = None
+    ip_address: str | None = None
+    created_at: datetime

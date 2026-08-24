@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from .config import Settings
 from .domain import SearchHit
 from .providers import RerankProvider
-from .repository import Repository
+from .repository import DEFAULT_ORGANIZATION_ID, Repository
 from .vector_index import VectorIndex
 
 CLAUSE_QUERY_RE = re.compile(r"(?<!\d)(\d+(?:\.\d+){2,5})(?!\d)")
@@ -169,22 +169,37 @@ class HybridRetriever:
         self,
         question: str,
         document_ids: Sequence[str] | None,
+        organization_id: str | None = None,
     ) -> tuple[str, list[SearchHit]]:
-        plan = plan_query(question, document_ids, self.repository.list_documents())
+        plan = plan_query(
+            question,
+            document_ids,
+            self.repository.list_documents(
+                organization_id=organization_id or DEFAULT_ORGANIZATION_ID
+            ),
+        )
         if (
             plan.kind == "comparison"
             and plan.target_document_ids
             and len(plan.target_document_ids) > 1
         ):
             per_document = [
-                self._retrieve_scope(plan.search_question, [document_id])
+                self._retrieve_scope(
+                    plan.search_question,
+                    [document_id],
+                    organization_id=organization_id,
+                )
                 for document_id in plan.target_document_ids
             ]
             final = self._balance_documents(
                 [hit for document_hits in per_document for hit in document_hits]
             )
             return plan.kind, final
-        final = self._retrieve_scope(plan.search_question, plan.target_document_ids)
+        final = self._retrieve_scope(
+            plan.search_question,
+            plan.target_document_ids,
+            organization_id=organization_id,
+        )
         if plan.kind == "comparison":
             final = self._balance_documents(final)
         return plan.kind, final
@@ -195,18 +210,24 @@ class HybridRetriever:
         document_ids: Sequence[str] | None,
         *,
         rerank: bool = True,
+        organization_id: str | None = None,
     ) -> list[SearchHit]:
         bm25 = self.repository.bm25_search(
             question,
             document_ids=document_ids,
+            organization_id=organization_id,
             limit=self.settings.retrieval_bm25_top_k,
         )
         vector_ranked = self.vector_index.search(
             question,
             document_ids=document_ids,
+            organization_id=organization_id,
             limit=self.settings.retrieval_dense_top_k,
         )
-        dense = self.repository.get_chunks([chunk_id for chunk_id, _ in vector_ranked])
+        dense = self.repository.get_chunks(
+            [chunk_id for chunk_id, _ in vector_ranked],
+            organization_id=organization_id,
+        )
         vector_scores = dict(vector_ranked)
         for hit in dense:
             hit.score = vector_scores[hit.chunk_id]
@@ -221,6 +242,7 @@ class HybridRetriever:
             exact = self.repository.exact_clause_search(
                 clause_match.group(1),
                 document_ids=document_ids,
+                organization_id=organization_id,
             )
             ranked_lists.insert(0, exact)
         fused = reciprocal_rank_fusion(ranked_lists)[: self.settings.retrieval_fused_top_k]

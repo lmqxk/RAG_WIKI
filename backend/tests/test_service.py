@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
+from backend.agent import AgentRun
 from backend.config import Settings
 from backend.db import Database
 from backend.domain import SearchHit
-from backend.agent import AgentRun
 from backend.repository import Repository, summarize_error
-from backend.service import RagService, preview_from_parsed
+from backend.service import RagService, preview_from_parsed, validate_pdf_header
 
 
 class FakeUpload:
@@ -42,6 +42,7 @@ class FakeRetriever:
         self,
         question: str,
         document_ids: list[str] | None,
+        organization_id: str | None = None,
     ) -> AgentRun:
         return AgentRun(
             kind="fact",
@@ -132,6 +133,11 @@ def test_summarize_error_hides_cuda_traceback() -> None:
     assert "CUDA 与当前 PyTorch wheel 不兼容" in summary
     assert "Traceback" not in summary
     assert "Qwen2VisionTransformerPretrainedModel" not in summary
+
+
+def test_validate_pdf_header_rejects_non_pdf_upload() -> None:
+    with pytest.raises(ValueError, match="有效的 PDF"):
+        validate_pdf_header(b"not a pdf")
 
 
 def test_preview_from_parsed_uses_table_image(tmp_path: Path) -> None:
@@ -301,3 +307,42 @@ async def test_reparse_document_rejects_active_job(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError):
         await service.reparse_document("doc-1", FakeUpload("new.pdf", b"%PDF-new"))
+
+
+@pytest.mark.asyncio
+async def test_reparse_document_keeps_original_file_when_hash_conflicts(tmp_path: Path) -> None:
+    service, repository, ingestion = make_service(tmp_path)
+    stored_path = tmp_path / "uploads" / "doc-1.pdf"
+    stored_path.parent.mkdir(parents=True)
+    stored_path.write_bytes(b"old pdf")
+    repository.create_document(
+        document_id="doc-1",
+        filename="old.pdf",
+        stored_path=stored_path,
+        sha256="old-sha",
+        title="old",
+        standard_no=None,
+        version=None,
+        file_size=7,
+    )
+    conflicting_content = b"%PDF-already-indexed"
+    conflict_path = tmp_path / "uploads" / "doc-2.pdf"
+    conflict_path.write_bytes(conflicting_content)
+    repository.create_document(
+        document_id="doc-2",
+        filename="existing.pdf",
+        stored_path=conflict_path,
+        sha256=hashlib.sha256(conflicting_content).hexdigest(),
+        title="existing",
+        standard_no=None,
+        version=None,
+        file_size=len(conflicting_content),
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        await service.reparse_document("doc-1", FakeUpload("new.pdf", conflicting_content))
+
+    assert stored_path.read_bytes() == b"old pdf"
+    assert repository.get_document("doc-1")["sha256"] == "old-sha"  # type: ignore[index]
+    assert ingestion.submitted == []
+    assert not list(stored_path.parent.glob(".doc-1.pdf.*"))
