@@ -25,6 +25,7 @@ logs/
 
 # 本地测试素材与截图
 test/*.pdf
+test/*模拟试题与回答.md
 test/*_paddlevl/
 展示/
 
