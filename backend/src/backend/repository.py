@@ -316,6 +316,37 @@ class Repository:
                     ),
                 )
 
+    def document_chunks(self, document_id: str) -> list[Chunk]:
+        """读取已入库文档的全部 chunk，按 ordinal 排序，供派生层（如 Wiki）复用真实锚点。"""
+
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, document_id, ordinal, chapter_path, clause_no, text,
+                       page_start, page_end, printed_page, source_type, parent_id
+                FROM chunks
+                WHERE document_id = ?
+                ORDER BY ordinal
+                """,
+                (document_id,),
+            ).fetchall()
+        return [
+            Chunk(
+                id=row["id"],
+                document_id=row["document_id"],
+                ordinal=row["ordinal"],
+                chapter_path=row["chapter_path"],
+                clause_no=row["clause_no"],
+                text=row["text"],
+                page_start=row["page_start"],
+                page_end=row["page_end"],
+                printed_page=row["printed_page"],
+                source_type=row["source_type"],
+                parent_id=row["parent_id"],
+            )
+            for row in rows
+        ]
+
     def get_chunks(self, chunk_ids: Sequence[str]) -> list[SearchHit]:
         if not chunk_ids:
             return []

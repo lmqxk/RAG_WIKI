@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-03T07:57:50.223226+00:00",
+  "document": {
+    "id": "doc-1",
+    "title": "工业建筑规范",
+    "filename": "doc.pdf",
+    "standard_no": null,
+    "version": null,
+    "sha256": null,
+    "pages": 20,
+    "parser_name": "parser"
+  },
+  "source": {
+    "parsed_path": "parsed/doc-1",
+    "normalized_path": "parsed/doc-1/normalized.json",
+    "chunk_count": 4
+  },
+  "analysis": {
+    "summary": "第 1 批摘要。",
+    "topics": [
+      "工业建筑"
+    ],
+    "concepts": [
+      {
+        "name": "安全疏散",
+        "aliases": [
+          "分区"
+        ],
+        "dimensions": [
+          "面积"
+        ],
+        "source_chunk_ids": [
+          "chunk-2",
+          "chunk-3",
+          "chunk-4"
+        ],
+        "related_concepts": []
+      },
+      {
+        "name": "防火分区",
+        "aliases": [
+          "分区"
+        ],
+        "dimensions": [
+          "面积"
+        ],
+        "source_chunk_ids": [
+          "chunk-1"
+        ],
+        "related_concepts": []
+      }
+    ],
+    "generation": "llm"
+  }
+}

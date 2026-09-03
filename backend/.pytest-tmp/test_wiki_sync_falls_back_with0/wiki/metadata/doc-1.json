@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-03T07:57:50.186584+00:00",
+  "document": {
+    "id": "doc-1",
+    "title": "测试规范",
+    "filename": null,
+    "standard_no": null,
+    "version": null,
+    "sha256": null,
+    "pages": 1,
+    "parser_name": "parser"
+  },
+  "source": {
+    "parsed_path": "parsed/doc-1",
+    "normalized_path": "parsed/doc-1/normalized.json",
+    "chunk_count": 1
+  },
+  "analysis": {
+    "summary": "测试规范：已完成结构化解析，共 1 个检索片段。",
+    "topics": [
+      "第 1 章 总则"
+    ],
+    "concepts": [],
+    "generation": "fallback"
+  }
+}

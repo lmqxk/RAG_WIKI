@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-03T07:57:50.153656+00:00",
+  "document": {
+    "id": "doc-1",
+    "title": "建筑防火通用规范",
+    "filename": "GB55037-2022.pdf",
+    "standard_no": "GB55037-2022",
+    "version": "2022",
+    "sha256": "abc",
+    "pages": 20,
+    "parser_name": "opendatalab-pdf-extract-kit"
+  },
+  "source": {
+    "parsed_path": "parsed/doc-1",
+    "normalized_path": "parsed/doc-1/normalized.json",
+    "chunk_count": 2
+  },
+  "analysis": {
+    "summary": "工业建筑防火要求的结构化资料。",
+    "topics": [
+      "工业建筑",
+      "防火分区"
+    ],
+    "concepts": [
+      {
+        "name": "防火分区",
+        "aliases": [
+          "建筑防火分区"
+        ],
+        "dimensions": [
+          "最大允许建筑面积"
+        ],
+        "source_chunk_ids": [
+          "chunk-1"
+        ],
+        "related_concepts": [
+          "防火间距"
+        ]
+      },
+      {
+        "name": "防火间距",
+        "aliases": [
+          "建筑间距"
+        ],
+        "dimensions": [
+          "最小距离"
+        ],
+        "source_chunk_ids": [
+          "chunk-2"
+        ],
+        "related_concepts": [
+          "防火分区"
+        ]
+      }
+    ],
+    "generation": "llm"
+  }
+}

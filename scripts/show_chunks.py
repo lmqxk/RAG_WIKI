@@ -13,12 +13,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend" / "src"))
 
-from backend.chunking import build_chunks  # noqa: E402
-from backend.domain import Chunk, PageBlock  # noqa: E402
+from backend.chunking import build_chunks
+from backend.domain import Chunk, PageBlock
 
 
 def shorten(text: str, limit: int) -> str:

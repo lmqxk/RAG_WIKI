@@ -27,10 +27,10 @@ from .retrieval import (
 )
 from .wiki import WikiManager
 
-ALLOWED_TOOLS = {"search_general", "search_in_document"}
+ALLOWED_TOOLS = {"search_general", "search_in_document", "search_wiki"}
 
 
-AllowedTool = Literal["search_general", "search_in_document"]
+AllowedTool = Literal["search_general", "search_in_document", "search_wiki"]
 Intent = Literal["comparison", "single_query", "exploration"]
 
 
@@ -127,7 +127,8 @@ class AgenticRetriever:
     ) -> AgentRun:
         if not self.settings.agentic_retrieval_enabled:
             started_at = time.perf_counter()
-            kind, hits = self.retriever.retrieve(question, document_ids)
+            query = self.wiki.expand_query(question, document_ids) if self.wiki else question
+            kind, hits = self.retriever.retrieve(query, document_ids)
             if self.wiki:
                 self.wiki.log_query(question, kind, hits)
             return AgentRun(
@@ -230,7 +231,7 @@ class AgenticRetriever:
                 "query_rewrites": ["多角度自由改写 query，覆盖不同信息维度"],
                 "steps": [
                     {
-                        "tool": "search_general | search_in_document",
+                        "tool": "search_general | search_in_document | search_wiki",
                         "query": "由 LLM 自主生成的具体检索 query，最长 120 字",
                         "document_ref": (
                             "search_in_document 必填，可用 id、standard_no、title 或 filename"
@@ -282,11 +283,20 @@ class AgenticRetriever:
         allowed_document_ids: set[str],
     ) -> list[AgentStep]:
         steps: list[AgentStep] = []
+        used_search_wiki = False
         for planned_step in planner_result.steps:
             tool = planned_step.tool
             query = _clean_query(planned_step.query)
             reason = planned_step.reason or planned_step.dimension
             if tool not in ALLOWED_TOOLS or not query:
+                continue
+            if tool == "search_wiki":
+                if used_search_wiki or not self.wiki:
+                    continue
+                used_search_wiki = True
+                steps.append(
+                    AgentStep(tool=tool, query=query, document_ids=None, reason=reason)
+                )
                 continue
             if tool == "search_in_document":
                 document_id = _resolve_document_ref(planned_step.document_ref, documents)
@@ -344,7 +354,23 @@ class AgenticRetriever:
         return hits
 
     def _execute_step(self, step: AgentStep) -> list[SearchHit]:
-        return self.retriever._retrieve_scope(step.query, step.document_ids, rerank=False)
+        if step.tool == "search_wiki":
+            return self._execute_search_wiki(step)
+        query = step.query
+        if self.wiki:
+            query = self.wiki.expand_query(query, step.document_ids)
+        return self.retriever._retrieve_scope(query, step.document_ids, rerank=False)
+
+    def _execute_search_wiki(self, step: AgentStep) -> list[SearchHit]:
+        assert self.wiki is not None
+        chunk_ids = self.wiki.search_concept_chunks(step.query, step.document_ids)
+        if not chunk_ids:
+            return []
+        hits = self.repository.get_chunks(chunk_ids)
+        for hit in hits:
+            hit.score = 0.5
+            hit.source = "wiki"
+        return hits
 
     def _needs_supplement(self, plan: QueryPlan, hits: Sequence[SearchHit]) -> bool:
         if not hits:

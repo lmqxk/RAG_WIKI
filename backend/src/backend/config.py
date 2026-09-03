@@ -57,6 +57,20 @@ class Settings(BaseSettings):
     chat_model: str | None = None
     chat_max_tokens: int = 2048
     chat_think: bool | None = None
+
+    # ? _1 ??????????????????????????????
+    primary_openai_base_url: str | None = Field(
+        default=None, validation_alias="RAG_OPENAI_BASE_URL_1"
+    )
+    primary_openai_api_key: str | None = Field(
+        default=None, validation_alias="RAG_OPENAI_API_KEY_1"
+    )
+    primary_chat_model: str | None = Field(
+        default=None, validation_alias="RAG_CHAT_MODEL_1"
+    )
+    fallback_openai_base_url: str | None = None
+    fallback_openai_api_key: str | None = None
+    fallback_chat_model: str | None = None
     embedding_backend: str = "local"
     embedding_model: str | None = None
     embedding_base_url: str = "https://api.jina.ai/v1"
@@ -139,9 +153,12 @@ class Settings(BaseSettings):
     wiki_enabled: bool = True
     wiki_llm_enabled: bool = True
     wiki_analysis_max_source_chars: int = 7000
+    wiki_analysis_max_batches: int = 6
 
     sqlite_path: Path | None = Field(default=None)
     qdrant_path: Path | None = Field(default=None)
+    qdrant_url: str | None = Field(default=None)
+    qdrant_api_key: str | None = Field(default=None)
 
     def model_post_init(self, __context: object) -> None:
         self.data_dir = self.data_dir.resolve()
@@ -153,6 +170,24 @@ class Settings(BaseSettings):
         self.local_rerank_model_dir = self.local_rerank_model_dir.resolve()
         self.local_rerank_hf_home = self.local_rerank_hf_home.resolve()
         self.local_embedding_model_dir = self.local_embedding_model_dir.resolve()
+        primary_complete = all(
+            (
+                self.primary_openai_base_url,
+                self.primary_openai_api_key,
+                self.primary_chat_model,
+            )
+        )
+        if primary_complete:
+            self.fallback_openai_base_url = self.openai_base_url
+            self.fallback_openai_api_key = self.openai_api_key
+            self.fallback_chat_model = self.chat_model
+            self.openai_base_url = self.primary_openai_base_url or self.openai_base_url
+            self.openai_api_key = self.primary_openai_api_key
+            self.chat_model = self.primary_chat_model
+
+    @property
+    def qdrant_is_remote(self) -> bool:
+        return bool(self.qdrant_url)
 
     def ensure_directories(self) -> None:
         for path in (
@@ -160,10 +195,9 @@ class Settings(BaseSettings):
             self.data_dir / "uploads",
             self.data_dir / "parsed",
             self.data_dir / "wiki",
-            self.data_dir / "qdrant",
             self.mineru_model_dir,
             self.local_rerank_hf_home,
-        ):
+        ) + (() if self.qdrant_is_remote else (self.data_dir / "qdrant",)):
             path.mkdir(parents=True, exist_ok=True)
 
 

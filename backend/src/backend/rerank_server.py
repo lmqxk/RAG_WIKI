@@ -9,15 +9,16 @@ from typing import Any
 
 from .torch_runtime import prepare_torch_runtime
 
+# torch 运行时必须在 import torch 之前完成环境准备。
 prepare_torch_runtime()
 
-import torch
-import uvicorn
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from transformers import AutoModel, AutoTokenizer
+import torch  # noqa: E402
+import uvicorn  # noqa: E402
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
+from transformers import AutoModel, AutoTokenizer  # noqa: E402
 
-from .config import get_settings
+from .config import get_settings  # noqa: E402
 
 
 class RerankRequest(BaseModel):

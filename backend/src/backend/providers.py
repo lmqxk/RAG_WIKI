@@ -28,6 +28,13 @@ ASCII_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*")
 HAN_SEQUENCE_RE = re.compile(r"[\u3400-\u9fff]+")
 IMAGE_PATH_RE = re.compile(r"images/[^\s\"'<>，。；)）]+", re.IGNORECASE)
 
+QWEN3_RERANK_PREFIX = (
+    '<|im_start|>system\nJudge whether the Document meets the requirements based on '
+    'the Query and the Instruct provided. Note that the answer can only be "yes" or '
+    'no".<|im_end|>\n<|im_start|>user\n'
+)
+QWEN3_RERANK_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
 
 def lexical_tokens(text: str) -> set[str]:
     tokens = {token.lower() for token in ASCII_TOKEN_RE.findall(text)}
@@ -162,6 +169,21 @@ class EmbeddingProvider:
         if self.backend == "local" and self.local_available:
             self.embed(["系统启动预热"])
 
+    @property
+    def _query_instruction(self) -> str | None:
+        model = (self.settings.embedding_model or "").lower()
+        if "qwen3-embedding" not in model:
+            return None
+        return (
+            "Instruct: Given a web search query, retrieve relevant passages "
+            "that answer the query\nQuery: "
+        )
+
+    def embed_query(self, text: str) -> list[float]:
+        """检索侧嵌入：Qwen3-Embedding 等非对称模型要求 query 加指令前缀。"""
+        instruction = self._query_instruction
+        return self.embed([f"{instruction}{text}" if instruction else text])[0]
+
     def _embed_primary(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -282,7 +304,6 @@ class EmbeddingProvider:
             json={
                 "model": self.settings.embedding_model,
                 "input": texts,
-                "dimensions": self.settings.embedding_dimension,
             },
             timeout=120,
         )
@@ -454,6 +475,21 @@ class RerankProvider:
             hit.score = hit.score * 0.65 + overlap * 0.35 + exact_bonus + normative_bonus
         return sorted(hits, key=lambda item: item.score, reverse=True)[:top_n]
 
+    def _qwen3_rerank_texts(
+        self, query: str, documents: list[str]
+    ) -> tuple[str, list[str]] | None:
+        model = (self.settings.rerank_model or "").lower()
+        if "qwen3-reranker" not in model:
+            return None
+        instruction = "Given a web search query, retrieve relevant passages that answer the query"
+        formatted_query = (
+            f"{QWEN3_RERANK_PREFIX}<Instruct>: {instruction}\n<Query>: {query}\n"
+        )
+        formatted_documents = [
+            f"<Document>: {document}{QWEN3_RERANK_SUFFIX}" for document in documents
+        ]
+        return formatted_query, formatted_documents
+
     def _external_rerank(
         self,
         query: str,
@@ -463,13 +499,17 @@ class RerankProvider:
         assert self.settings.rerank_base_url
         assert self.settings.rerank_api_key
         assert self.settings.rerank_model
+        documents = [hit.text for hit in hits]
+        qwen3 = self._qwen3_rerank_texts(query, documents)
+        if qwen3:
+            query, documents = qwen3
         response = httpx.post(
             self.settings.rerank_base_url,
             headers={"Authorization": f"Bearer {self.settings.rerank_api_key}"},
             json={
                 "model": self.settings.rerank_model,
                 "query": query,
-                "documents": [hit.text for hit in hits],
+                "documents": documents,
                 "top_n": top_n,
                 "return_documents": False,
             },
@@ -492,6 +532,42 @@ class ChatProvider:
         self.settings = settings
         self.external = bool(settings.openai_api_key and settings.chat_model)
 
+    def _chat_endpoints(self) -> list[tuple[str, str, str]]:
+        endpoints: list[tuple[str, str, str]] = []
+        if (
+            self.settings.openai_base_url
+            and self.settings.openai_api_key
+            and self.settings.chat_model
+        ):
+            endpoints.append(
+                (
+                    self.settings.openai_base_url,
+                    self.settings.openai_api_key,
+                    self.settings.chat_model,
+                )
+            )
+        if (
+            self.settings.fallback_openai_base_url
+            and self.settings.fallback_openai_api_key
+            and self.settings.fallback_chat_model
+        ):
+            endpoints.append(
+                (
+                    self.settings.fallback_openai_base_url,
+                    self.settings.fallback_openai_api_key,
+                    self.settings.fallback_chat_model,
+                )
+            )
+        return endpoints
+
+    @staticmethod
+    def _is_failover_error(error: Exception) -> bool:
+        if isinstance(error, httpx.TransportError):
+            return True
+        if isinstance(error, httpx.HTTPStatusError):
+            return error.response.status_code == 429 or error.response.status_code >= 500
+        return False
+
     def answer(
         self,
         question: str,
@@ -511,80 +587,69 @@ class ChatProvider:
         *,
         max_tokens: int = 1200,
     ) -> dict[str, object] | None:
-        """调用当前回答模型生成结构化派生数据；不可用时返回 None。"""
-
         if not self.external:
             return None
-        assert self.settings.openai_api_key
-        assert self.settings.chat_model
-        payload: dict[str, object] = {
-            "model": self.settings.chat_model,
-            "temperature": 0,
-            "max_tokens": max(max_tokens, self.settings.chat_max_tokens),
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
-        }
-        if self.settings.chat_think is not None:
-            payload["thinking"] = {"type": "enabled" if self.settings.chat_think else "disabled"}
-
-        for attempt in range(3):
-            try:
-                response = httpx.post(
-                    f"{self.settings.openai_base_url.rstrip('/')}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.settings.openai_api_key}",
-                        "Connection": "close",
-                    },
-                    json=payload,
-                    timeout=180,
-                )
-                response.raise_for_status()
-                response_payload = response.json()
-                choice = response_payload["choices"][0]
-                message = choice["message"]
-                content = message.get("content") or ""
-                if not content:
-                    logger.warning(
-                        "structured_generation_empty_content "
-                        "message_keys=%s finish_reason=%s reasoning_length=%s",
-                        sorted(message),
-                        choice.get("finish_reason"),
-                        len(str(message.get("reasoning_content") or "")),
+        for endpoint_index, (base_url, api_key, model) in enumerate(self._chat_endpoints()):
+            payload: dict[str, object] = {
+                "model": model,
+                "temperature": 0,
+                "max_tokens": max(max_tokens, self.settings.chat_max_tokens),
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                ],
+            }
+            if self.settings.chat_think is not None:
+                payload["thinking"] = {
+                    "type": "enabled" if self.settings.chat_think else "disabled"
+                }
+            for attempt in range(3):
+                try:
+                    response = httpx.post(
+                        f"{base_url.rstrip('/')}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Connection": "close"},
+                        json=payload,
+                        timeout=180,
                     )
-                break
-            except httpx.TransportError as exc:
-                if attempt == 2:
+                    response.raise_for_status()
+                    message = response.json()["choices"][0]["message"]
+                    content = message.get("content") or ""
+                    if not content:
+                        logger.warning("structured_generation_empty_content model=%s", model)
+                    parsed = _loads_json_object(str(content))
+                    if parsed is None:
+                        logger.warning("structured_generation_json_invalid model=%s", model)
+                    return parsed
+                except httpx.TransportError as exc:
+                    if attempt < 2:
+                        logger.warning(
+                            "structured_generation_retry model=%s attempt=%s error=%s",
+                            model,
+                            attempt + 1,
+                            exc,
+                        )
+                        time.sleep(attempt + 1)
+                        continue
+                    error: Exception = exc
+                except httpx.HTTPStatusError as exc:
+                    error = exc
+                except (KeyError, TypeError) as exc:
                     logger.warning(
-                        "structured_generation_request_failed attempts=%s error=%s",
-                        attempt + 1,
-                        exc,
+                        "structured_generation_response_invalid model=%s error=%s", model, exc
+                    )
+                    return None
+                if endpoint_index + 1 >= len(
+                    self._chat_endpoints()
+                ) or not self._is_failover_error(error):
+                    logger.warning(
+                        "structured_generation_request_failed model=%s error=%s", model, error
                     )
                     return None
                 logger.warning(
-                    "structured_generation_retry attempt=%s error=%s",
-                    attempt + 1,
-                    exc,
+                    "structured_generation_primary_failed_using_fallback error=%s", error
                 )
-                time.sleep(attempt + 1)
-            except httpx.HTTPStatusError as exc:
-                logger.warning(
-                    "structured_generation_request_failed status=%s", exc.response.status_code
-                )
-                return None
-            except (KeyError, TypeError) as exc:
-                logger.warning("structured_generation_response_invalid error=%s", exc)
-                return None
-        parsed = _loads_json_object(str(content))
-        if parsed is None:
-            preview = re.sub(r"\s+", " ", str(content)).strip()[:400]
-            logger.warning(
-                "structured_generation_json_invalid content_length=%s content_preview=%r",
-                len(str(content)),
-                preview,
-            )
-        return parsed
+                break
+        return None
 
     def _external_answer(
         self,
@@ -592,15 +657,27 @@ class ChatProvider:
         hits: list[SearchHit],
         query_type: str,
     ) -> str:
-        payload = self._chat_payload(question, hits, query_type)
-        response = httpx.post(
-            f"{self.settings.openai_base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {self.settings.openai_api_key}"},
-            json=payload,
-            timeout=180,
-        )
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+        last_error: Exception | None = None
+        endpoints = self._chat_endpoints()
+        for index, (base_url, api_key, model) in enumerate(endpoints):
+            payload = self._chat_payload(question, hits, query_type)
+            payload["model"] = model
+            try:
+                response = httpx.post(
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=payload,
+                    timeout=180,
+                )
+                response.raise_for_status()
+                return response.json()["choices"][0]["message"]["content"].strip()
+            except Exception as exc:
+                last_error = exc
+                if index + 1 >= len(endpoints) or not self._is_failover_error(exc):
+                    raise
+                logger.warning("chat_primary_failed_using_fallback error=%s", exc)
+        assert last_error is not None
+        raise last_error
 
     def answer_stream(
         self,
@@ -614,34 +691,47 @@ class ChatProvider:
         if not self.external:
             yield self._extractive_answer(question, hits, query_type)
             return
-        assert self.settings.openai_api_key
-        assert self.settings.chat_model
-        payload = self._chat_payload(question, hits, query_type)
-        payload["stream"] = True
-        with httpx.stream(
-            "POST",
-            f"{self.settings.openai_base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {self.settings.openai_api_key}"},
-            json=payload,
-            timeout=180,
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line or not line.startswith("data: "):
-                    continue
-                data = line.removeprefix("data: ").strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    item = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                choice = item.get("choices", [{}])[0]
-                delta_payload = choice.get("delta") or {}
-                message_payload = choice.get("message") or {}
-                delta = delta_payload.get("content") or message_payload.get("content")
-                if delta:
-                    yield str(delta)
+        last_error: Exception | None = None
+        endpoints = self._chat_endpoints()
+        for index, (base_url, api_key, model) in enumerate(endpoints):
+            emitted = False
+            payload = self._chat_payload(question, hits, query_type)
+            payload["model"] = model
+            payload["stream"] = True
+            try:
+                with httpx.stream(
+                    "POST",
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=payload,
+                    timeout=180,
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data = line.removeprefix("data: ").strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            item = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        choice = item.get("choices", [{}])[0]
+                        delta_payload = choice.get("delta") or {}
+                        message_payload = choice.get("message") or {}
+                        delta = delta_payload.get("content") or message_payload.get("content")
+                        if delta:
+                            emitted = True
+                            yield str(delta)
+                return
+            except Exception as exc:
+                last_error = exc
+                if emitted or index + 1 >= len(endpoints) or not self._is_failover_error(exc):
+                    raise
+                logger.warning("chat_stream_primary_failed_using_fallback error=%s", exc)
+        assert last_error is not None
+        raise last_error
 
     def _chat_payload(
         self,

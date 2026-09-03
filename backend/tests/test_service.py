@@ -5,11 +5,12 @@ from pathlib import Path
 
 import pytest
 
+from backend.agent import AgentRun
 from backend.config import Settings
 from backend.db import Database
 from backend.domain import SearchHit
-from backend.agent import AgentRun
 from backend.repository import Repository, summarize_error
+from backend.schemas import Citation
 from backend.service import RagService, preview_from_parsed
 
 
@@ -115,6 +116,44 @@ def test_chat_keeps_citations_structured_without_appending_reference_text(tmp_pa
     assert result.answer == "只回答最相关的 A 行。[1]"
     assert "引用：" not in result.answer
     assert len(result.citations) == 1
+
+
+def make_citation(index: int) -> Citation:
+    return Citation(
+        index=index,
+        chunk_id=f"chunk-{index}",
+        document_id="doc-1",
+        document_title="测试规范",
+        standard_no=None,
+        version=None,
+        clause_no=None,
+        chapter_path="",
+        pdf_page=1,
+        printed_page=None,
+        quote="引用内容",
+        score=0.9,
+        source_type="text",
+        preview_image_url=None,
+        preview_label=None,
+    )
+
+
+def test_used_citations_filters_to_marked_numbers(tmp_path: Path) -> None:
+    service, _, _ = make_service(tmp_path)
+    citations = [make_citation(i) for i in range(1, 7)]
+
+    selected = service._used_citations(citations, "结论甲 [1]，结论乙 [3]；条款号 3.4.2 不算引用。")
+
+    assert [c.index for c in selected] == [1, 3]
+
+
+def test_used_citations_falls_back_when_answer_marks_nothing(tmp_path: Path) -> None:
+    service, _, _ = make_service(tmp_path)
+    citations = [make_citation(i) for i in range(1, 4)]
+
+    selected = service._used_citations(citations, "规范未标注任何引用编号。")
+
+    assert [c.index for c in selected] == [1, 2, 3]
 
 
 def test_summarize_error_hides_cuda_traceback() -> None:

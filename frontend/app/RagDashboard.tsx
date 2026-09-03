@@ -23,18 +23,18 @@ import {
   FileSearch,
   FileText,
   Gauge,
-  Home,
   Layers3,
   Menu,
+  Network,
   PanelRightOpen,
   Search,
   Send,
   Settings,
   ShieldCheck,
   Sparkles,
+  Square,
   UploadCloud,
   X,
-  Zap,
 } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -68,6 +68,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { MarkdownMessage } from "@/components/markdown-message";
+import { WikiWorkspace } from "@/components/wiki-workspace";
 
 /** 未配置固定地址时，使用访问网页的设备主机名，支持局域网直连。 */
 function resolveApiBase(): string {
@@ -144,6 +145,20 @@ type Message = {
   role: "user" | "assistant";
   content: string;
   result?: ChatResult;
+  retrievalSteps?: RetrievalStep[];
+};
+
+type RetrievalStep = {
+  tool: string;
+  query: string;
+  documents: string[];
+  reason: string;
+};
+
+const STEP_LABEL: Record<string, string> = {
+  search_general: "全局检索",
+  search_in_document: "定向检索",
+  search_wiki: "概念定位",
 };
 
 type Health = {
@@ -176,6 +191,25 @@ const QUERY_LABEL: Record<string, string> = {
   comparison: "综合对比",
 };
 
+const CHAT_STORAGE_KEY = "rag-chat-history";
+const CHAT_STORAGE_LIMIT = 60;
+
+/** 跳过没有内容的占位气泡，避免中断的会话恢复出悬挂消息。 */
+function loadStoredMessages(): Message[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const stored = window.localStorage.getItem(CHAT_STORAGE_KEY);
+    if (!stored) return [];
+    const parsed = JSON.parse(stored) as Message[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (message) => message.role === "user" || Boolean(message.content || message.result),
+    );
+  } catch {
+    return [];
+  }
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -191,24 +225,6 @@ function parserDisplayName(parserName: string | null) {
   if (normalized === "rapidocr") return "RapidOCR";
   if (normalized.startsWith("mineru-")) return "MinerU VLM";
   return parserName;
-}
-
-function pipelineDisplayName(pipeline?: string) {
-  const normalized = (pipeline || "pdf-extract-kit").toLowerCase();
-  if (
-    normalized === "pdf-extract-kit" ||
-    normalized === "pdf-extract-kit-1.0" ||
-    normalized === "opendatalab-pdf-extract-kit"
-  ) {
-    return "PDF-Extract-Kit";
-  }
-  if (normalized === "mineru" || normalized === "mineru-vlm" || normalized === "vlm") {
-    return "MinerU VLM";
-  }
-  if (normalized === "hybrid" || normalized === "hybrid-engine") return "Hybrid";
-  if (normalized === "rapidocr") return "RapidOCR";
-  if (normalized === "pymupdf" || normalized === "native") return "PyMuPDF";
-  return pipeline || "解析器";
 }
 
 function mediaUrl(path: string) {
@@ -227,11 +243,14 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 async function streamChat(
   payload: { question: string; document_ids?: string[] },
   onDelta: (text: string) => void,
+  onMeta?: (steps: RetrievalStep[]) => void,
+  signal?: AbortSignal,
 ): Promise<ChatResult> {
   const response = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   });
   if (!response.ok || !response.body) {
     const fallback = await response.json().catch(() => null);
@@ -252,6 +271,8 @@ async function streamChat(
       const event = JSON.parse(line);
       if (event.event === "delta") {
         onDelta(String(event.text ?? ""));
+      } else if (event.event === "meta") {
+        onMeta?.(Array.isArray(event.retrieval_steps) ? event.retrieval_steps : []);
       } else if (event.event === "done") {
         finalResult = event.result as ChatResult;
       } else if (event.event === "error") {
@@ -276,11 +297,13 @@ export function RagDashboard() {
   const [notice, setNotice] = useState<string | null>(null);
   const [activeResult, setActiveResult] = useState<ChatResult | null>(null);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [highlightCitation, setHighlightCitation] = useState<number | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [activeView, setActiveView] = useState("workbench");
   const [documentSearch, setDocumentSearch] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const readyDocuments = useMemo(
     () => documents.filter((document) => document.status === "READY"),
@@ -307,6 +330,8 @@ export function RagDashboard() {
   };
 
   useEffect(() => {
+    // 首次挂载拉取文档与健康状态（基线即有的模式）。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     Promise.all([loadDocuments(), api<Health>("/api/health").then(setHealth)]).catch((error) =>
       setNotice(error.message),
     );
@@ -338,6 +363,35 @@ export function RagDashboard() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [jobs]);
+
+  useEffect(() => {
+    // 水合后从 localStorage 恢复历史，避免 SSR 首屏不一致。
+    const stored = loadStoredMessages();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 仅在客户端水合时执行一次
+    if (stored.length) setMessages(stored);
+  }, []);
+
+  useEffect(() => {
+    if (!messages.length) return;
+    try {
+      window.localStorage.setItem(
+        CHAT_STORAGE_KEY,
+        JSON.stringify(messages.slice(-CHAT_STORAGE_LIMIT)),
+      );
+    } catch {
+      // localStorage 不可用或超出配额时放弃持久化
+    }
+  }, [messages]);
+
+  const clearMessages = () => {
+    setMessages([]);
+    setActiveResult(null);
+    try {
+      window.localStorage.removeItem(CHAT_STORAGE_KEY);
+    } catch {
+      // 忽略清理失败
+    }
+  };
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -404,16 +458,31 @@ export function RagDashboard() {
       question: trimmed,
       document_ids: selectedIds.size ? [...selectedIds] : undefined,
     };
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const result = await streamChat(requestPayload, (delta) => {
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === assistantId
-              ? { ...message, content: `${message.content}${delta}` }
-              : message,
-          ),
-        );
-      });
+      const result = await streamChat(
+        requestPayload,
+        (delta) => {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId
+                ? { ...message, content: `${message.content}${delta}` }
+                : message,
+            ),
+          );
+        },
+        (steps) => {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId
+                ? { ...message, retrievalSteps: steps }
+                : message,
+            ),
+          );
+        },
+        controller.signal,
+      );
       setActiveResult(result);
       setMessages((current) =>
         current.map((message) =>
@@ -423,31 +492,58 @@ export function RagDashboard() {
         ),
       );
     } catch (error) {
-      try {
-        const result = await api<ChatResult>("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestPayload),
-        });
-        setActiveResult(result);
+      if (error instanceof DOMException && error.name === "AbortError") {
+        // 用户主动停止：保留已流式输出的部分内容
         setMessages((current) =>
           current.map((message) =>
             message.id === assistantId
-              ? { ...message, content: result.answer, result }
+              ? { ...message, content: message.content || "已停止生成。" }
               : message,
           ),
         );
-      } catch (fallbackError) {
-        const text = fallbackError instanceof Error ? fallbackError.message : "问答失败";
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === assistantId ? { ...message, content: text } : message,
-          ),
-        );
+      } else {
+        try {
+          const result = await api<ChatResult>("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestPayload),
+            signal: controller.signal,
+          });
+          setActiveResult(result);
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId
+                ? { ...message, content: result.answer, result }
+                : message,
+            ),
+          );
+        } catch (fallbackError) {
+          if (fallbackError instanceof DOMException && fallbackError.name === "AbortError") {
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantId
+                  ? { ...message, content: message.content || "已停止生成。" }
+                  : message,
+              ),
+            );
+            return;
+          }
+          const text = fallbackError instanceof Error ? fallbackError.message : "问答失败";
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId ? { ...message, content: text } : message,
+            ),
+          );
+        }
       }
     } finally {
+      abortRef.current = null;
       setAnswering(false);
     }
+  };
+
+  const stopAnswering = () => {
+    abortRef.current?.abort();
   };
 
   const navigate = (view: string) => {
@@ -457,7 +553,7 @@ export function RagDashboard() {
 
   return (
     <div className="min-h-screen bg-muted/40">
-      <DesktopNavigation activeView={activeView} onNavigate={navigate} health={health} />
+      <DesktopNavigation activeView={activeView} onNavigate={navigate} />
 
       <div className="min-h-screen lg:pl-56">
         <TopBar
@@ -487,12 +583,18 @@ export function RagDashboard() {
 
           <div className="mb-5">
             <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-              {activeView === "library" ? "规范知识库" : "规范智能问答工作台"}
+              {activeView === "library"
+                ? "规范知识库"
+                : activeView === "wiki"
+                  ? "知识网络"
+                  : "规范智能问答工作台"}
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
               {activeView === "library"
                 ? "管理规范、解析状态与问答范围"
-                : "从精确条款定位，到跨版本综合对比"}
+                : activeView === "wiki"
+                  ? "跨规范抽取的概念地图，可回链每个原文锚点"
+                  : "从精确条款定位，到跨版本综合对比"}
             </p>
           </div>
 
@@ -513,9 +615,12 @@ export function RagDashboard() {
                   chatEndRef={chatEndRef}
                   onQuestion={setQuestion}
                   onSubmit={submitQuestion}
+                  onStop={stopAnswering}
                   onSuggestion={setQuestion}
-                  onOpenEvidence={(result) => {
+                  onClear={clearMessages}
+                  onOpenEvidence={(result, citationIndex) => {
                     setActiveResult(result);
+                    setHighlightCitation(citationIndex ?? null);
                     setEvidenceOpen(true);
                   }}
                 />
@@ -529,6 +634,8 @@ export function RagDashboard() {
                 />
               </div>
             </>
+          ) : activeView === "wiki" ? (
+            <WikiWorkspace apiBase={API_BASE} />
           ) : (
             <LibraryWorkspace
               documents={filteredDocuments}
@@ -563,14 +670,19 @@ export function RagDashboard() {
             <SheetTitle>主导航</SheetTitle>
             <SheetDescription>切换规范问答系统功能</SheetDescription>
           </SheetHeader>
-          <NavigationBody activeView={activeView} onNavigate={navigate} health={health} />
+          <NavigationBody activeView={activeView} onNavigate={navigate} />
         </SheetContent>
       </Sheet>
 
       <EvidenceSheet
         open={evidenceOpen}
-        onOpenChange={setEvidenceOpen}
+        onOpenChange={(open) => {
+          setEvidenceOpen(open);
+          if (!open) setHighlightCitation(null);
+        }}
         result={activeResult}
+        highlightIndex={highlightCitation}
+        onHighlightDone={() => setHighlightCitation(null)}
       />
     </div>
   );
@@ -579,15 +691,13 @@ export function RagDashboard() {
 function DesktopNavigation({
   activeView,
   onNavigate,
-  health,
 }: {
   activeView: string;
   onNavigate: (view: string) => void;
-  health: Health | null;
 }) {
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-56 border-r bg-sidebar lg:block">
-      <NavigationBody activeView={activeView} onNavigate={onNavigate} health={health} />
+      <NavigationBody activeView={activeView} onNavigate={onNavigate} />
     </aside>
   );
 }
@@ -595,15 +705,14 @@ function DesktopNavigation({
 function NavigationBody({
   activeView,
   onNavigate,
-  health,
 }: {
   activeView: string;
   onNavigate: (view: string) => void;
-  health: Health | null;
 }) {
   const items = [
     { id: "workbench", label: "智能问答", icon: Bot },
     { id: "library", label: "知识库", icon: Database },
+    { id: "wiki", label: "知识网络", icon: Network },
   ];
   return (
     <div className="flex h-full flex-col p-3">
@@ -653,22 +762,6 @@ function NavigationBody({
           系统设置
         </Button>
       </nav>
-      <div className="mt-auto rounded-xl border bg-card p-3">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium">系统状态</span>
-          <span
-            className={`size-2 rounded-full ${health?.status === "ok" ? "bg-primary" : "bg-muted-foreground"}`}
-          />
-        </div>
-        <p className="mt-2 text-xs text-muted-foreground">
-          {health?.status === "ok" ? "API 与本地索引运行正常" : "正在连接后端服务"}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {(health?.parser_available ?? health?.mineru_available)
-            ? `${pipelineDisplayName(health?.document_pipeline)} 可用`
-            : `${pipelineDisplayName(health?.document_pipeline)} 未就绪`}
-        </p>
-      </div>
     </div>
   );
 }
@@ -697,7 +790,11 @@ function TopBar({
         </Button>
         <div>
           <p className="text-sm font-medium">
-            {activeView === "library" ? "知识库管理" : "智能问答"}
+            {activeView === "library"
+              ? "知识库管理"
+              : activeView === "wiki"
+                ? "知识网络"
+                : "智能问答"}
           </p>
           <p className="hidden text-xs text-muted-foreground sm:block">
             建筑工程规范 · 技术标准 · 企业制度
@@ -711,14 +808,6 @@ function TopBar({
         </Badge>
         <Badge variant={health?.llm_configured ? "secondary" : "outline"} className="hidden sm:inline-flex">
           {health?.llm_configured ? "LLM 已加载" : "离线资料模式"}
-        </Badge>
-        <Badge
-          variant={(health?.parser_available ?? health?.mineru_available) ? "secondary" : "outline"}
-          className="hidden sm:inline-flex"
-        >
-          {(health?.parser_available ?? health?.mineru_available)
-            ? pipelineDisplayName(health?.document_pipeline)
-            : "解析器未就绪"}
         </Badge>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -782,7 +871,9 @@ function ChatWorkspace({
   chatEndRef,
   onQuestion,
   onSubmit,
+  onStop,
   onSuggestion,
+  onClear,
   onOpenEvidence,
 }: {
   messages: Message[];
@@ -793,8 +884,10 @@ function ChatWorkspace({
   chatEndRef: RefObject<HTMLDivElement | null>;
   onQuestion: (value: string) => void;
   onSubmit: (event?: FormEvent) => Promise<void>;
+  onStop: () => void;
   onSuggestion: (value: string) => void;
-  onOpenEvidence: (result: ChatResult) => void;
+  onClear: () => void;
+  onOpenEvidence: (result: ChatResult, citationIndex?: number) => void;
 }) {
   const hasPendingAssistant = messages.some(
     (message) => message.role === "assistant" && !message.result,
@@ -813,7 +906,21 @@ function ChatWorkspace({
               已选择 {selectedCount} 份规范，当前为 {llmConfigured ? "LLM 总结模式" : "离线资料模式"}
           </CardDescription>
           </div>
-          <Badge variant="secondary">回答附原文资料</Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary">回答附原文资料</Badge>
+            {messages.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                type="button"
+                disabled={answering}
+                onClick={onClear}
+              >
+                <X data-icon="inline-start" />
+                清空对话
+              </Button>
+            )}
+          </div>
         </div>
       </CardHeader>
 
@@ -857,11 +964,25 @@ function ChatWorkspace({
                         </Badge>
                       </div>
                     )}
+                    {message.retrievalSteps?.length ? (
+                      <RetrievalStepsView steps={message.retrievalSteps} />
+                    ) : null}
                     <div className="break-words">
                       {message.role === "assistant" && !message.content && !message.result ? (
                         <PendingAnswer />
                       ) : (
-                        <MarkdownMessage content={message.content} />
+                        <MarkdownMessage
+                          content={message.content}
+                          citations={(message.result?.citations ?? []).map((citation) => ({
+                            index: citation.index,
+                            url: `${API_BASE}/api/documents/${citation.document_id}/file#page=${citation.pdf_page}`,
+                          }))}
+                          onCitationClick={
+                            message.result
+                              ? (index) => onOpenEvidence(message.result!, index)
+                              : undefined
+                          }
+                        />
                       )}
                     </div>
                     {message.result && (
@@ -917,10 +1038,17 @@ function ChatWorkspace({
             />
             <div className="flex items-center justify-between gap-3 px-1 pb-1">
               <span className="text-xs text-muted-foreground">Enter 发送 · Shift + Enter 换行</span>
-              <Button type="submit" disabled={!question.trim() || answering}>
-                {answering ? <Zap data-icon="inline-start" /> : <Send data-icon="inline-start" />}
-                {answering ? "检索中" : "检索并回答"}
-              </Button>
+              {answering ? (
+                <Button type="button" variant="outline" onClick={onStop}>
+                  <Square className="size-3.5" data-icon="inline-start" />
+                  停止回答
+                </Button>
+              ) : (
+                <Button type="submit" disabled={!question.trim()}>
+                  <Send data-icon="inline-start" />
+                  检索并回答
+                </Button>
+              )}
             </div>
           </div>
         </form>
@@ -949,6 +1077,35 @@ function PendingAnswer() {
         <span className="size-1.5 animate-bounce rounded-full bg-current" />
       </span>
     </div>
+  );
+}
+
+function RetrievalStepsView({ steps }: { steps: RetrievalStep[] }) {
+  return (
+    <details className="mb-2 rounded-lg border bg-background/60 px-3 py-2 text-xs [&_summary::-webkit-details-marker]:hidden">
+      <summary className="cursor-pointer select-none text-[11px] font-medium tracking-wider text-muted-foreground">
+        检索过程 · {steps.length} 步
+      </summary>
+      <div className="mt-2 flex flex-col gap-2">
+        {steps.map((step, index) => (
+          <div
+            key={`${step.tool}-${index}`}
+            className="flex flex-wrap items-center gap-x-2 gap-y-1"
+            title={step.reason}
+          >
+            <Badge variant="outline" className="shrink-0 text-[10px]">
+              {STEP_LABEL[step.tool] ?? step.tool}
+            </Badge>
+            <span className="min-w-0 flex-1 break-words font-medium">{step.query}</span>
+            {step.documents.length > 0 && (
+              <span className="shrink-0 text-muted-foreground">
+                {step.documents.join("、")}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -1278,11 +1435,30 @@ function EvidenceSheet({
   open,
   onOpenChange,
   result,
+  highlightIndex,
+  onHighlightDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   result: ChatResult | null;
+  highlightIndex?: number | null;
+  onHighlightDone?: () => void;
 }) {
+  useEffect(() => {
+    if (!open || highlightIndex == null) return;
+    const timer = window.setTimeout(() => {
+      document
+        .getElementById(`citation-card-${highlightIndex}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 250);
+    const clear = window.setTimeout(() => onHighlightDone?.(), 3200);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(clear);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, highlightIndex]);
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -1309,7 +1485,13 @@ function EvidenceSheet({
               </div>
             ) : (
               result.citations.map((citation) => (
-                <Card key={citation.chunk_id} className="min-w-0 shadow-none">
+                <Card
+                  key={citation.chunk_id}
+                  id={`citation-card-${citation.index}`}
+                  className={`min-w-0 shadow-none transition ${
+                    highlightIndex === citation.index ? "ring-2 ring-primary/60" : ""
+                  }`}
+                >
                   <CardHeader className="pb-3">
                     <div className="flex items-start justify-between gap-3">
                       <Badge>[{citation.index}]</Badge>

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-03T07:57:50.265233+00:00",
+  "document": {
+    "id": "doc-1",
+    "title": "建筑防火通用规范",
+    "filename": "GB55037-2022.pdf",
+    "standard_no": "GB55037-2022",
+    "version": null,
+    "sha256": null,
+    "pages": 10,
+    "parser_name": "parser"
+  },
+  "source": {
+    "parsed_path": "parsed/doc-1",
+    "normalized_path": "parsed/doc-1/normalized.json",
+    "chunk_count": 1
+  },
+  "analysis": {
+    "summary": "摘要。",
+    "topics": [
+      "工业建筑"
+    ],
+    "concepts": [
+      {
+        "name": "防火间距",
+        "aliases": [],
+        "dimensions": [],
+        "source_chunk_ids": [
+          "chunk-1"
+        ],
+        "related_concepts": []
+      }
+    ],
+    "generation": "llm"
+  }
+}

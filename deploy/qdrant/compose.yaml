@@ -1,0 +1,11 @@
+# 本机独立 Qdrant 服务：仅供当前 RAG 主机访问，数据持久化在项目 storage 目录。
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.16.2
+    container_name: rag-qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - ../../storage/qdrant-server:/qdrant/storage

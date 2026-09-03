@@ -76,7 +76,8 @@ def test_rerank_provider_falls_back_when_external_service_fails(monkeypatch) -> 
 
 
 def test_chat_provider_stream_uses_extractive_answer_without_external_llm() -> None:
-    provider = ChatProvider(Settings(openai_api_key=None, chat_model=None))
+    # _env_file=None 隔离项目根 .env，避免测试环境里配置了真实 LLM 时发起外网请求。
+    provider = ChatProvider(Settings(_env_file=None, openai_api_key="", chat_model=None))
     chunks = list(
         provider.answer_stream(
             "防火间距",
@@ -91,7 +92,11 @@ def test_chat_provider_stream_uses_extractive_answer_without_external_llm() -> N
 
 def test_local_embedding_is_not_configured_until_model_is_downloaded(tmp_path) -> None:
     provider = EmbeddingProvider(
-        Settings(local_embedding_model_dir=tmp_path / "missing-bge-model")
+        Settings(
+            _env_file=None,
+            embedding_backend="local",
+            local_embedding_model_dir=tmp_path / "missing-bge-model",
+        )
     )
 
     assert provider.backend == "local"

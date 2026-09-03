@@ -1,13 +1,38 @@
 "use client";
 
+import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-type MarkdownMessageProps = {
-  content: string;
+export type InlineCitation = {
+  index: number;
+  url: string;
 };
 
-export function MarkdownMessage({ content }: MarkdownMessageProps) {
+type MarkdownMessageProps = {
+  content: string;
+  citations?: InlineCitation[];
+  onCitationClick?: (index: number) => void;
+};
+
+const CITED_MARKER_RE = /\[(\d{1,2})\]/g;
+
+/** 把答案中的 [n] 转成指向 PDF 原页的引用链接。 */
+function linkCitations(content: string, citations: InlineCitation[]) {
+  if (!citations.length) return content;
+  const available = new Set(citations.map((citation) => citation.index));
+  return content.replace(CITED_MARKER_RE, (match, rawIndex: string) => {
+    const index = Number(rawIndex);
+    return available.has(index) ? `[${rawIndex}](rag-citation:${index})` : match;
+  });
+}
+
+export function MarkdownMessage({ content, citations, onCitationClick }: MarkdownMessageProps) {
+  const processed = useMemo(() => linkCitations(content, citations ?? []), [content, citations]);
+  const citationMap = useMemo(
+    () => new Map((citations ?? []).map((citation) => [citation.index, citation])),
+    [citations],
+  );
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -44,19 +69,41 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
           <th className="border bg-muted px-2 py-1 text-left font-medium">{children}</th>
         ),
         td: ({ children }) => <td className="border px-2 py-1 align-top">{children}</td>,
-        a: ({ children, href }) => (
-          <a
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            className="text-primary underline underline-offset-2"
-          >
-            {children}
-          </a>
-        ),
+        a: ({ children, href }) => {
+          if (typeof href === "string" && href.startsWith("rag-citation:")) {
+            const citation = citationMap.get(Number(href.slice("rag-citation:".length)));
+            if (!citation) return <>{children}</>;
+            return (
+              <a
+                href={citation.url}
+                target="_blank"
+                rel="noreferrer"
+                title="点击查看原文资料"
+                onClick={(event) => {
+                  if (!onCitationClick) return;
+                  event.preventDefault();
+                  onCitationClick(citation.index);
+                }}
+                className="mx-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded border border-primary/40 bg-primary/10 px-1 align-middle text-[0.75em] font-medium text-primary no-underline transition hover:bg-primary/20"
+              >
+                {children}
+              </a>
+            );
+          }
+          return (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary underline underline-offset-2"
+            >
+              {children}
+            </a>
+          );
+        },
       }}
     >
-      {content}
+      {processed}
     </ReactMarkdown>
   );
 }

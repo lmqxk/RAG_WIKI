@@ -46,6 +46,32 @@ class FakeRepository:
             },
         ]
 
+    def get_chunks(self, chunk_ids: list[str]) -> list[SearchHit]:
+        return [make_hit(chunk_id, "new") for chunk_id in chunk_ids]
+
+
+class FakeWiki:
+    def __init__(self) -> None:
+        self.expanded: list[tuple[str, tuple[str, ...] | None]] = []
+
+    def log_query(self, question, query_type, hits) -> None:
+        return None
+
+    def catalog_context(self, documents) -> list[dict[str, object]]:
+        return []
+
+    def expand_query(self, query: str, document_ids=None) -> str:
+        scope = tuple(document_ids) if document_ids else None
+        self.expanded.append((query, scope))
+        if "防火间距" in query:
+            return f"{query} 建筑间距"
+        return query
+
+    def search_concept_chunks(self, query: str, document_ids=None, *, limit: int = 20):
+        if "疏散楼梯间" in query:
+            return ["wiki-chunk-1", "wiki-chunk-2"]
+        return []
+
 
 class FakeReranker:
     def __init__(self) -> None:
@@ -249,3 +275,81 @@ def test_agentic_retriever_falls_back_when_llm_tool_is_invalid(monkeypatch) -> N
 
 def test_loads_json_object_accepts_markdown_fence() -> None:
     assert _loads_json_object('```json\n{"steps": []}\n```') == {"steps": []}
+
+
+def test_agentic_retriever_expands_query_with_wiki_aliases() -> None:
+    retriever = FakeHybridRetriever()
+    wiki = FakeWiki()
+    agent = AgenticRetriever(
+        Settings(agentic_planner_llm_enabled=False),
+        FakeRepository(),  # type: ignore[arg-type]
+        retriever,  # type: ignore[arg-type]
+        wiki,  # type: ignore[arg-type]
+    )
+
+    agent._execute_step(AgentStep("search_general", "厂房之间的防火间距要求", None, "test"))
+
+    assert wiki.expanded == [("厂房之间的防火间距要求", None)]
+    assert any("建筑间距" in call[0] for call in retriever.calls)
+
+
+def test_agentic_retriever_executes_search_wiki_step() -> None:
+    retriever = FakeHybridRetriever()
+    agent = AgenticRetriever(
+        Settings(agentic_planner_llm_enabled=False),
+        FakeRepository(),  # type: ignore[arg-type]
+        retriever,  # type: ignore[arg-type]
+        FakeWiki(),  # type: ignore[arg-type]
+    )
+
+    hits = agent._execute_step(AgentStep("search_wiki", "疏散楼梯间防火要求", None, "概念定位"))
+
+    assert [hit.chunk_id for hit in hits] == ["wiki-chunk-1", "wiki-chunk-2"]
+    assert all(hit.source == "wiki" for hit in hits)
+    assert retriever.calls == [], "search_wiki 不应调用混合检索"
+
+
+class SearchWikiResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"intent": "exploration", '
+                            '"query_rewrites": ["疏散楼梯间"], '
+                            '"steps": ['
+                            '{"tool": "search_wiki", "query": "疏散楼梯间", '
+                            '"dimension": "概念定位"}, '
+                            '{"tool": "search_wiki", "query": "封闭楼梯间", '
+                            '"dimension": "重复概念定位"}, '
+                            '{"tool": "search_in_document", "query": "疏散楼梯间 防火要求", '
+                            '"document_ref": "GB55037-2022", "dimension": "正文检索"}'
+                            "]}"
+                        )
+                    }
+                }
+            ]
+        }
+
+
+def test_agentic_retriever_allows_search_wiki_once_per_plan(monkeypatch) -> None:
+    retriever = FakeHybridRetriever()
+    wiki = FakeWiki()
+    monkeypatch.setattr("backend.agent.httpx.post", lambda *args, **kwargs: SearchWikiResponse())
+    agent = AgenticRetriever(
+        Settings(openai_api_key="key", chat_model="planner", agentic_min_hits=1),
+        FakeRepository(),  # type: ignore[arg-type]
+        retriever,  # type: ignore[arg-type]
+        wiki,  # type: ignore[arg-type]
+    )
+
+    result = agent.run("疏散楼梯间有什么防火要求", ["new"])
+
+    assert result.steps[0].tool == "search_wiki"
+    assert result.steps[0].query == "疏散楼梯间"
+    assert [step.tool for step in result.steps].count("search_wiki") == 1
+    assert any(hit.source == "wiki" for hit in result.hits)

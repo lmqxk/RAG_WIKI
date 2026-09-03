@@ -1,0 +1,59 @@
+{
+  "generated_at": "2026-09-03T07:57:50.162024+00:00",
+  "model": {
+    "direct_wikilink": 3.0,
+    "source_overlap": 4.0,
+    "adamic_adar": 1.5,
+    "type_affinity": 1.0
+  },
+  "pages": [
+    {
+      "id": "documents/doc-1",
+      "type": "document",
+      "path": "E:\\lmq\\RAG_ZB\\backend\\.pytest-tmp\\test_wiki_sync_generates_trace0\\wiki\\documents\\doc-1.md"
+    },
+    {
+      "id": "concepts/防火分区",
+      "type": "concept",
+      "path": "E:\\lmq\\RAG_ZB\\backend\\.pytest-tmp\\test_wiki_sync_generates_trace0\\wiki\\concepts\\防火分区.md"
+    },
+    {
+      "id": "concepts/防火间距",
+      "type": "concept",
+      "path": "E:\\lmq\\RAG_ZB\\backend\\.pytest-tmp\\test_wiki_sync_generates_trace0\\wiki\\concepts\\防火间距.md"
+    }
+  ],
+  "relations": [
+    {
+      "source": "concepts/防火分区",
+      "target": "concepts/防火间距",
+      "score": 10.164,
+      "signals": [
+        "direct_wikilink",
+        "source_overlap",
+        "adamic_adar",
+        "type_affinity"
+      ]
+    },
+    {
+      "source": "concepts/防火分区",
+      "target": "documents/doc-1",
+      "score": 9.164,
+      "signals": [
+        "direct_wikilink",
+        "source_overlap",
+        "adamic_adar"
+      ]
+    },
+    {
+      "source": "concepts/防火间距",
+      "target": "documents/doc-1",
+      "score": 9.164,
+      "signals": [
+        "direct_wikilink",
+        "source_overlap",
+        "adamic_adar"
+      ]
+    }
+  ]
+}

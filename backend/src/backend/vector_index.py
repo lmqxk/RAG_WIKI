@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from ipaddress import ip_address
+from urllib.parse import urlparse
 
 from qdrant_client import QdrantClient, models
 
@@ -10,12 +12,35 @@ from .config import Settings
 from .domain import Chunk
 from .providers import EmbeddingProvider
 
+
+def _should_bypass_proxy(url: str | None) -> bool:
+    if not url:
+        return False
+    hostname = urlparse(url).hostname
+    if hostname in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    if not hostname:
+        return False
+    try:
+        address = ip_address(hostname)
+    except ValueError:
+        return False
+    return address.is_private or address.is_loopback
+
+
 class VectorIndex:
     def __init__(self, settings: Settings, embeddings: EmbeddingProvider) -> None:
         self.settings = settings
         self.embeddings = embeddings
         self.collection_name = settings.embedding_collection_name
-        self.client = QdrantClient(path=str(settings.qdrant_path))
+        if settings.qdrant_is_remote:
+            self.client = QdrantClient(
+                url=settings.qdrant_url,
+                api_key=settings.qdrant_api_key,
+                trust_env=not _should_bypass_proxy(settings.qdrant_url),
+            )
+        else:
+            self.client = QdrantClient(path=str(settings.qdrant_path))
         if not self.client.collection_exists(self.collection_name):
             self.client.create_collection(
                 collection_name=self.collection_name,
@@ -87,7 +112,7 @@ class VectorIndex:
             )
         response = self.client.query_points(
             collection_name=self.collection_name,
-            query=self.embeddings.embed([query])[0],
+            query=self.embeddings.embed_query(query),
             query_filter=query_filter,
             limit=limit,
             with_payload=False,

@@ -1,0 +1,28 @@
+
+        {
+          "blocks": [
+            {
+              "page": 2,
+              "type": "table",
+              "images": [
+                {
+                  "path": "images/c0fb.jpg",
+                  "caption": "橡檩屋顶截面",
+                  "row_context": "屋顶承重构件",
+                  "column_context": "截面图和结构厚度或截面最小尺寸(mm)",
+                  "cell_text": "橡檩屋顶截面0.50轻型木桁架屋顶截面",
+                  "order": 1
+                },
+                {
+                  "path": "images/f078.jpg",
+                  "caption": "轻型木桁架屋顶截面",
+                  "row_context": "屋顶承重构件",
+                  "column_context": "截面图和结构厚度或截面最小尺寸(mm)",
+                  "cell_text": "橡檩屋顶截面0.50轻型木桁架屋顶截面",
+                  "order": 2
+                }
+              ]
+            }
+          ]
+        }
+        

@@ -43,6 +43,7 @@ class WikiManager:
         self.concepts_dir = self.root / "concepts"
         self.metadata_dir = self.root / "metadata"
         self.graph_dir = self.root / "graph"
+        self._concept_cache: list[dict[str, object]] | None = None
         for path in (self.documents_dir, self.concepts_dir, self.metadata_dir, self.graph_dir):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -58,6 +59,7 @@ class WikiManager:
 
         if not self.settings.wiki_enabled:
             return
+        self._concept_cache = None
         document_id = str(document["id"])
         analysis = self._analyze(document, parsed, chunks)
         metadata: dict[str, object] = {
@@ -140,38 +142,306 @@ class WikiManager:
         except OSError:
             return
 
+    def concept_lexicon(
+        self,
+        document_ids: Sequence[str] | None = None,
+    ) -> list[dict[str, object]]:
+        """返回概念词典：name、aliases、anchors（document_id -> chunk_ids）。
+
+        document_ids 提供时只保留在这些文档中有锚点的概念。
+        """
+
+        if not self.settings.wiki_enabled:
+            return []
+        scope = set(document_ids) if document_ids else None
+        lexicon: list[dict[str, object]] = []
+        for entry in self._all_concepts():
+            anchors = entry["anchors"]
+            assert isinstance(anchors, dict)
+            if scope is not None:
+                anchors = {doc_id: ids for doc_id, ids in anchors.items() if doc_id in scope}
+            if not anchors:
+                continue
+            lexicon.append(
+                {
+                    "name": entry["name"],
+                    "aliases": sorted(entry["aliases"]),
+                    "anchors": anchors,
+                }
+            )
+        return lexicon
+
+    def expand_query(self, query: str, document_ids: Sequence[str] | None = None) -> str:
+        """问题命中概念名或别名时，把该概念其余别名追加进 BM25 查询。
+
+        向量检索语义本身可跨越不同叫法，扩展只服务于关键词召回。
+        """
+
+        if not self.settings.wiki_enabled:
+            return query
+        additions: list[str] = []
+        for entry in self.concept_lexicon(document_ids):
+            terms = [str(entry["name"]), *entry["aliases"]]
+            if not any(len(term) >= 2 and term in query for term in terms):
+                continue
+            additions.extend(
+                alias for alias in entry["aliases"] if len(alias) >= 2 and alias not in query
+            )
+        additions = list(dict.fromkeys(additions))[:8]
+        if not additions:
+            return query
+        return f"{query} {' '.join(additions)}"
+
+    def search_concept_chunks(
+        self,
+        query: str,
+        document_ids: Sequence[str] | None = None,
+        *,
+        limit: int = 20,
+    ) -> list[str]:
+        """返回问题命中概念的 chunk 锚点 id，作为 wiki 概念通道的召回来源。"""
+
+        if not self.settings.wiki_enabled:
+            return []
+        chunk_ids: list[str] = []
+        for entry in self.concept_lexicon(document_ids):
+            terms = [str(entry["name"]), *entry["aliases"]]
+            if not any(len(term) >= 2 and term in query for term in terms):
+                continue
+            anchors = entry["anchors"]
+            assert isinstance(anchors, dict)
+            for document_anchors in anchors.values():
+                chunk_ids.extend(document_anchors)
+                if len(chunk_ids) >= limit:
+                    return chunk_ids[:limit]
+        return chunk_ids[:limit]
+
+    def related_pages(self, page_id: str, limit: int = 8) -> list[dict[str, object]]:
+        """读取 related 图中与页面相邻的高分关系，供导航与前端展示。"""
+
+        if not self.settings.wiki_enabled:
+            return []
+        graph = self._read_json(self.graph_dir / "related.json")
+        if not graph:
+            return []
+        relations = [
+            relation
+            for relation in graph.get("relations", [])
+            if isinstance(relation, dict)
+            and page_id in (relation.get("source"), relation.get("target"))
+        ]
+        relations.sort(key=lambda item: float(item.get("score", 0)), reverse=True)
+        results: list[dict[str, object]] = []
+        for relation in relations[:limit]:
+            other = relation["target"] if relation["source"] == page_id else relation["source"]
+            results.append(
+                {
+                    "page_id": other,
+                    "score": float(relation.get("score", 0)),
+                    "signals": list(relation.get("signals", [])),
+                }
+            )
+        return results
+
+    def concepts_overview(self) -> list[dict[str, object]]:
+        """概念总览：每个概念的别名、关联文档与锚点数量，供知识网络浏览。"""
+
+        documents = self._document_titles()
+        overview: list[dict[str, object]] = []
+        for entry in self._all_concepts():
+            anchors = entry["anchors"]
+            assert isinstance(anchors, dict)
+            if not anchors:
+                continue
+            document_refs = [
+                {
+                    "document_id": document_id,
+                    "title": documents.get(document_id, document_id),
+                    "anchor_count": len(chunk_ids),
+                }
+                for document_id, chunk_ids in anchors.items()
+            ]
+            document_refs.sort(key=lambda item: -int(item["anchor_count"]))
+            overview.append(
+                {
+                    "name": entry["name"],
+                    "aliases": sorted(entry["aliases"]),
+                    "documents": document_refs,
+                    "total_anchors": sum(len(ids) for ids in anchors.values()),
+                }
+            )
+        overview.sort(key=lambda item: -int(item["total_anchors"]))
+        return overview
+
+    def graph_summary(
+        self,
+        *,
+        min_score: float = 0.0,
+        max_links: int = 400,
+    ) -> dict[str, object]:
+        """related 图的节点与边摘要，节点带人类可读标题。"""
+
+        if not self.settings.wiki_enabled:
+            return {"nodes": [], "links": []}
+        graph = self._read_json(self.graph_dir / "related.json") or {}
+        relations = [
+            relation
+            for relation in graph.get("relations", [])
+            if isinstance(relation, dict) and float(relation.get("score", 0)) >= min_score
+        ]
+        relations.sort(key=lambda item: float(item.get("score", 0)), reverse=True)
+        relations = relations[:max_links]
+        documents = self._document_titles()
+        node_ids = {str(relation["source"]) for relation in relations} | {
+            str(relation["target"]) for relation in relations
+        }
+        nodes = [
+            {"page_id": node_id, "title": self._page_title(node_id, documents)}
+            for node_id in sorted(node_ids)
+        ]
+        links = [
+            {
+                "source": str(relation["source"]),
+                "target": str(relation["target"]),
+                "score": round(float(relation.get("score", 0)), 2),
+                "signals": list(relation.get("signals", [])),
+            }
+            for relation in relations
+        ]
+        return {"nodes": nodes, "links": links}
+
+    def read_page(self, page_id: str) -> dict[str, object] | None:
+        """读取 Wiki 派生页 markdown；page_id 形如 concepts/<名称>、documents/<id>、overview。"""
+
+        if not self.settings.wiki_enabled:
+            return None
+        normalized = page_id.strip("/")
+        parts = normalized.split("/")
+        if normalized == "overview":
+            path = self.root / "overview.md"
+        elif len(parts) == 2 and parts[0] in {"concepts", "documents"}:
+            path = self.root / parts[0] / f"{parts[1]}.md"
+        else:
+            return None
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(self.root.resolve())
+        except (OSError, ValueError):
+            return None
+        if not resolved.exists() or not resolved.is_file():
+            return None
+        text = resolved.read_text(encoding="utf-8")
+        title_match = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
+        title = title_match.group(1).strip() if title_match else parts[-1]
+        return {"page_id": normalized, "title": title, "markdown": text}
+
+    @staticmethod
+    def _page_title(page_id: str, documents: dict[str, str]) -> str:
+        parts = page_id.split("/")
+        if parts and parts[0] == "concepts" and len(parts) == 2:
+            return parts[1]
+        if parts and parts[0] == "documents" and len(parts) == 2:
+            return documents.get(parts[1], parts[1])
+        return page_id
+
+    def _document_titles(self) -> dict[str, str]:
+        titles: dict[str, str] = {}
+        for metadata in self._metadata_items():
+            document = metadata.get("document")
+            if isinstance(document, dict) and document.get("id"):
+                titles[str(document["id"])] = str(
+                    document.get("title") or document.get("filename") or document["id"]
+                )
+        return titles
+
+    def _all_concepts(self) -> list[dict[str, object]]:
+        """聚合全部 metadata 中的概念：别名合并、锚点按文档分组。"""
+
+        if self._concept_cache is not None:
+            return self._concept_cache
+        entries: dict[str, dict[str, object]] = {}
+        for metadata in self._metadata_items():
+            document = metadata.get("document")
+            analysis = metadata.get("analysis")
+            if not isinstance(document, dict) or not isinstance(analysis, dict):
+                continue
+            document_id = str(document.get("id"))
+            for concept in analysis.get("concepts", []):
+                if not isinstance(concept, dict) or not concept.get("name"):
+                    continue
+                name = str(concept["name"])
+                entry = entries.setdefault(
+                    name,
+                    {"name": name, "aliases": set(), "anchors": {}},
+                )
+                aliases = entry["aliases"]
+                assert isinstance(aliases, set)
+                aliases.update(str(alias) for alias in concept.get("aliases", []))
+                anchors = entry["anchors"]
+                assert isinstance(anchors, dict)
+                existing = anchors.setdefault(document_id, [])
+                existing.extend(str(chunk_id) for chunk_id in concept.get("source_chunk_ids", []))
+        self._concept_cache = list(entries.values())
+        return self._concept_cache
+
     def _analyze(
         self,
         document: dict[str, object],
         parsed: ParsedDocument,
         chunks: Sequence[Chunk],
     ) -> dict[str, object]:
-        samples = _chunk_samples(chunks, self.settings.wiki_analysis_max_source_chars)
         fallback = _fallback_analysis(document, chunks)
-        if not self.settings.wiki_llm_enabled or not samples:
+        if not self.settings.wiki_llm_enabled:
             return fallback
-        generated = self.generator.generate_json(
-            WIKI_ANALYSIS_SYSTEM_PROMPT,
-            {
-                "document": {
-                    "id": document.get("id"),
-                    "title": document.get("title"),
-                    "standard_no": document.get("standard_no"),
-                    "version": document.get("version"),
-                    "pages": parsed.pages,
+        batches = _chunk_batches(chunks, self.settings.wiki_analysis_max_source_chars)
+        if not batches:
+            return fallback
+        batches = batches[: self.settings.wiki_analysis_max_batches]
+        known_concepts = set(self._known_concepts())
+        document_identity = _document_identity_keys(document)
+        merged: dict[str, object] | None = None
+        for index, batch in enumerate(batches):
+            generated = self.generator.generate_json(
+                WIKI_ANALYSIS_SYSTEM_PROMPT,
+                {
+                    "document": {
+                        "id": document.get("id"),
+                        "title": document.get("title"),
+                        "standard_no": document.get("standard_no"),
+                        "version": document.get("version"),
+                        "pages": parsed.pages,
+                    },
+                    "batch": f"{index + 1}/{len(batches)}",
+                    "source_chunks": batch["samples"],
+                    "known_concepts": sorted(known_concepts),
                 },
-                "source_chunks": samples,
-                "known_concepts": self._known_concepts(),
-            },
-            max_tokens=1400,
-        )
-        allowed_chunk_ids = {str(sample["chunk_id"]) for sample in samples}
-        return _normalize_analysis(
-            generated,
-            fallback,
-            allowed_chunk_ids,
-            set(self._known_concepts()),
-        )
+                max_tokens=4000,
+            )
+            if generated is None:
+                # 首批失败说明 LLM 不可用或输出无效，直接回退；
+                # 后续批失败则保留已合并结果，避免整篇回退。
+                if merged is None:
+                    return fallback
+                break
+            part = _normalize_analysis(
+                generated,
+                fallback,
+                batch["ref_map"],
+                known_concepts,
+                document_identity,
+            )
+            merged = part if merged is None else _merge_analyses(merged, part)
+            known_concepts |= {str(item["name"]) for item in part["concepts"]}
+        if merged is None:
+            return fallback
+        concepts = [
+            item
+            for item in merged["concepts"]
+            if isinstance(item, dict) and item.get("name")
+        ]
+        concepts.sort(key=lambda item: len(item.get("source_chunk_ids", [])), reverse=True)
+        merged["concepts"] = concepts[:40]
+        return merged
 
     def _write_document_page(self, metadata: dict[str, object]) -> None:
         document = metadata["document"]
@@ -510,30 +780,50 @@ class WikiManager:
         path.write_text(text, encoding="utf-8")
 
 
-def _chunk_samples(chunks: Sequence[Chunk], char_limit: int) -> list[dict[str, object]]:
+def _chunk_batches(
+    chunks: Sequence[Chunk],
+    char_limit: int,
+) -> list[dict[str, object]]:
+    """按章节顺序把 chunks 切成多批样本，每批内同章节最多 2 个片段。
+
+    LLM 只输出短编号引用（c1、c2…），由 ref_map 映射回真实 chunk_id，
+    避免 UUID 撑爆输出 token 导致 JSON 截断。
+    """
+
+    batches: list[dict[str, object]] = []
     samples: list[dict[str, object]] = []
-    seen_chapters: set[str] = set()
+    ref_map: dict[str, str] = {}
+    chapter_counts: dict[str, int] = defaultdict(int)
     total = 0
-    for chunk in chunks:
-        if chunk.chapter_path in seen_chapters and len(samples) >= 8:
-            continue
+    for position, chunk in enumerate(chunks, 1):
         text = re.sub(r"\s+", " ", chunk.text).strip()[:700]
         if not text:
             continue
+        chapter = chunk.chapter_path or ""
+        if chapter_counts.get(chapter, 0) >= 2:
+            continue
         if total + len(text) > char_limit and samples:
-            break
+            batches.append({"samples": samples, "ref_map": ref_map})
+            samples = []
+            ref_map = {}
+            chapter_counts = defaultdict(int)
+            total = 0
+        reference = f"c{position}"
         samples.append(
             {
-                "chunk_id": chunk.id,
+                "chunk_id": reference,
                 "chapter_path": chunk.chapter_path,
                 "clause_no": chunk.clause_no,
                 "pages": [chunk.page_start, chunk.page_end],
                 "text": text,
             }
         )
-        seen_chapters.add(chunk.chapter_path)
+        ref_map[reference] = chunk.id
+        chapter_counts[chapter] += 1
         total += len(text)
-    return samples
+    if samples:
+        batches.append({"samples": samples, "ref_map": ref_map})
+    return batches
 
 
 def _fallback_analysis(document: dict[str, object], chunks: Sequence[Chunk]) -> dict[str, object]:
@@ -550,8 +840,9 @@ def _fallback_analysis(document: dict[str, object], chunks: Sequence[Chunk]) -> 
 def _normalize_analysis(
     generated: dict[str, object] | None,
     fallback: dict[str, object],
-    allowed_chunk_ids: set[str],
+    chunk_ref_map: dict[str, str],
     known_concepts: set[str],
+    document_identity: set[str],
 ) -> dict[str, object]:
     if not generated:
         return fallback
@@ -564,13 +855,19 @@ def _normalize_analysis(
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name") or "").strip()
+            if not name or _norm_key(name) in document_identity:
+                continue
             raw_anchors = item.get("source_chunk_ids", [])
             anchors = (
-                [str(chunk_id) for chunk_id in raw_anchors if str(chunk_id) in allowed_chunk_ids]
+                [
+                    chunk_ref_map[str(chunk_id)]
+                    for chunk_id in raw_anchors
+                    if str(chunk_id) in chunk_ref_map
+                ]
                 if isinstance(raw_anchors, list)
                 else []
             )
-            if not name or not anchors:
+            if not anchors:
                 continue
             concepts.append(
                 {
@@ -598,6 +895,56 @@ def _normalize_analysis(
         "concepts": concepts,
         "generation": "llm",
     }
+
+
+def _merge_analyses(base: dict[str, object], extra: dict[str, object]) -> dict[str, object]:
+    """合并两批分析结果：概念按名称合并，别名、维度、锚点和关系取并集。"""
+
+    merged: dict[str, dict[str, object]] = {}
+    for concept in base.get("concepts", []):
+        if isinstance(concept, dict) and concept.get("name"):
+            merged[str(concept["name"])] = dict(concept)
+    for concept in extra.get("concepts", []):
+        if not (isinstance(concept, dict) and concept.get("name")):
+            continue
+        name = str(concept["name"])
+        existing = merged.get(name)
+        if existing is None:
+            merged[name] = dict(concept)
+            continue
+        for key in ("aliases", "dimensions", "source_chunk_ids", "related_concepts"):
+            combined = _unique_strings(
+                list(existing.get(key, [])) + list(concept.get(key, []))
+            )
+            existing[key] = combined[:20] if key == "source_chunk_ids" else combined[:8]
+    return {
+        "summary": base.get("summary") or extra.get("summary"),
+        "topics": _unique_strings(
+            list(base.get("topics", [])) + list(extra.get("topics", []))
+        )[:16],
+        "concepts": list(merged.values()),
+        "generation": "llm",
+    }
+
+
+def _norm_key(value: object) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def _document_identity_keys(document: dict[str, object]) -> set[str]:
+    """文档标题、标准号等不应被抽成概念，用于过滤 LLM 输出。"""
+
+    filename = str(document.get("filename") or "")
+    keys: set[str] = set()
+    for value in (
+        document.get("title"),
+        document.get("standard_no"),
+        Path(filename).stem if filename else None,
+    ):
+        key = _norm_key(value)
+        if len(key) >= 4:
+            keys.add(key)
+    return keys
 
 
 def _normalize_overview(
