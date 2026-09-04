@@ -1,0 +1,24 @@
+﻿{
+    "dataset":  "gb55037_vs_gb50016_advanced_broad_questions.jsonl",
+    "total":  20,
+    "success":  20,
+    "errors":  0,
+    "new_clause_hit_rate_pct":  95,
+    "old_clause_hit_rate_pct":  85,
+    "dual_standard_citation_rate_pct":  100,
+    "answer_old_new_delta_rate_pct":  0,
+    "latency_ms":  {
+                       "avg":  3598.3,
+                       "p50":  3124.1,
+                       "p95":  5953.1,
+                       "max":  6101.8
+                   },
+    "new_clause_miss_ids":  [
+                                "gb55037-vs-gb50016-advanced-014"
+                            ],
+    "old_clause_miss_ids":  [
+                                "gb55037-vs-gb50016-advanced-008",
+                                "gb55037-vs-gb50016-advanced-014",
+                                "gb55037-vs-gb50016-advanced-018"
+                            ]
+}

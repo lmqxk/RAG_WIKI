@@ -5,11 +5,13 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=20232A)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
-[![Qdrant](https://img.shields.io/badge/Qdrant-Local-DC244C?logo=qdrant&logoColor=white)](https://qdrant.tech/)
+[![Qdrant](https://img.shields.io/badge/Qdrant-DC244C?logo=qdrant&logoColor=white)](https://qdrant.tech/)
 [![SQLite](https://img.shields.io/badge/SQLite-FTS5-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![Ollama](https://img.shields.io/badge/Ollama-Local_LLM-000000?logo=ollama&logoColor=white)](https://ollama.com/)
-[![Embedding](https://img.shields.io/badge/Embedding-BGE--small--zh--v1.5-8A2BE2)](https://huggingface.co/BAAI/bge-small-zh-v1.5)
-[![Reranker](https://img.shields.io/badge/Reranker-Jina--reranker--v3.5-F59E0B)](https://huggingface.co/jinaai/jina-reranker-v3.5)
+[![vLLM](https://img.shields.io/badge/vLLM-Inference-76B900)](https://docs.vllm.ai/)
+[![Embedding](https://img.shields.io/badge/Embedding-Qwen3--Embedding--0.6B-8A2BE2)](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)
+[![Reranker](https://img.shields.io/badge/Reranker-Qwen3--Reranker--0.6B-F59E0B)](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
 ## 概述
 
@@ -24,15 +26,17 @@
 
 - 单次上传一份 PDF，知识库可连续加入多份文档。
 - 支持 100 MB、600 页以内的文本型或扫描型 PDF。
-- 默认通过 OpenDataLab PDF-Extract-Kit 管线解析 PDF，优先保留表格、图片、章节、条款和页码结构。
+- 默认通过 PaddleOCR-VL 视觉语言模型管线解析 PDF（支持 pdf-extract-kit、rapidocr、pymupdf 等多管线切换），优先保留表格、图片、章节、条款和页码结构。
 - 条款、章节、正文、表格、图片位置、PDF 页码和纸面页码结构化。
-- SQLite FTS5 BM25 + 本地 BGE 中文向量召回 + Qdrant Local + RRF + Jina Rerank。
+- SQLite FTS5 BM25 + Qwen3-Embedding 语义向量召回（vLLM 容器）+ Qdrant + RRF + Qwen3-Reranker 重排。
 - 单文档问答、跨文档综合回答和新旧规范对比。
 - 对比类问题带轻量 Agentic 编排：Planner LLM 自动拆解多维度检索计划，并行检索后按文档组织资料包。
+- Planner 会参考数据库中的 READY 文档目录和 Wiki `metadata.json` 摘要、主题、概念，再生成受控的多步检索计划；最终答案仍只以原文检索资料为依据。
+- Wiki Markdown 用于人工浏览、概念导航、chunk 原文锚点和关系计算，不会把全部页面一次性塞入 Planner；详细页面后续按需读取。
 - 流式回答接口记录检索耗时、首 token 时间和总耗时，方便持续调优。
 - 回答末尾附引用，引用卡片可跳转到 PDF 原页。
 - 区分规范正文与条文说明，确定性结论优先规范正文。
-- BGE 模型未下载时，系统仍可通过 BM25 完成检索和原文引用；下载模型后执行 `reindex` 启用语义向量召回。
+- Embedding/Reranker 容器未启动时，系统仍可通过 BM25 完成检索和原文引用；Docker `--profile gpu` 启动模型服务后需重建向量索引启用语义召回。
 
 ## 项目架构
 
@@ -47,32 +51,49 @@ flowchart LR
     I --> P[PDF 解析与结构识别]
     P --> C[章节与条款切分]
     C --> S[(SQLite FTS5)]
-    C --> V[Embedding：BGE-small-zh-v1.5]
+    C --> V[Embedding：Qwen3-Embedding-0.6B vLLM]
     V --> Q[(Qdrant 向量索引)]
+    C --> WK[派生 Wiki：metadata、文档页、概念页、关系图]
 
     R --> P2[Agent Planner LLM]
+    WK --> P2
     P2 --> P3[多维 Query 改写与检索计划]
-    P3 --> S
-    P3 --> Q
+    P3 --> RX[检索执行器]
+    RX --> S
+    RX --> QE[Query Embedding：Qwen3]
+    QE --> Q
     S --> E[BM25 + 向量召回 + RRF 融合]
     Q --> E
-    E --> RR[Jina Reranker v3.5]
+    E --> RR[Qwen3-Reranker-0.6B]
     RR --> G
     G --> O[Ollama / OpenAI 兼容模型]
     G --> X[回答与原文引用]
     X --> W
 ```
 
+Wiki 是基于解析结果和 chunks 生成的派生知识层，不替代 SQLite、Qdrant 或 PDF 原文：
+
+```text
+ParsedDocument + Chunk
+  -> WikiManager._analyze()
+  -> storage/wiki/metadata/{document_id}.json
+  -> documents/*.md、concepts/*.md、overview.md、related.json
+  -> Planner 读取 metadata 的摘要、主题和概念
+  -> 最终仍回到 BM25、向量检索和重排序获取原文资料
+```
+
+Planner 当前读取的 Wiki 信息是轻量 metadata，不是所有 Markdown 页面。详细 Wiki 页面用于人工浏览、交叉链接、chunk 锚点和关系图；`search_wiki` 工具已支持按概念名检索 Wiki 概念页关联的 chunk 集合，`get_related_pages` 等按需读取能力后续扩展。
+
 数据处理主流程：
 
 ```text
 PDF 上传
-  → PDF-Extract-Kit 全量文档解析
+  → PaddleOCR-VL 全量文档解析
   → 章节、条款、表格、图片位置和页码结构化
   → 文本块切分
-  → BM25 全文索引与 BGE 向量索引
+  → BM25 全文索引与 Qwen3 向量索引
   → Agent Planner 生成多维检索计划
-  → 并行召回、RRF 融合与 Jina 重排序
+  → 并行召回、RRF 融合与 Qwen3 重排序
   → 大模型依据资料生成回答
   → 引用回链 PDF 原页
 ```
@@ -83,8 +104,9 @@ PDF 上传
 | --- | --- | --- |
 | Web 工作台 | `frontend/app/RagDashboard.tsx` | 知识库管理、文档选择、问答和引用查看 |
 | API 入口 | `backend/src/backend/main.py` | 健康检查、文档、任务、文件和问答接口 |
-| 文档解析 | `backend/src/backend/parser.py` | 默认 PDF-Extract-Kit 管线解析 PDF，并保留表格、图片和版面信息 |
+| 文档解析 | `backend/src/backend/parser.py` | 默认 PaddleOCR-VL 管线解析 PDF，并保留表格、图片和版面信息 |
 | 文档入库 | `backend/src/backend/ingestion.py` | 解析、切分、索引和任务状态编排 |
+| Wiki 派生层 | `backend/src/backend/wiki.py` | 基于解析产物生成带 chunk 锚点的文档页、概念页和 Planner 上下文 |
 | 文本切分 | `backend/src/backend/chunking.py` | 按章节、条款和页码生成检索块 |
 | 检索编排 | `backend/src/backend/retrieval.py` | 条款定位、全文检索、向量检索、跨文档平衡和结果融合 |
 | Agentic 检索 | `backend/src/backend/agent.py` | LLM JSON 规划、多维度查询改写、并行检索步骤和回退计划 |
@@ -122,7 +144,7 @@ ollama list
 ```dotenv
 RAG_OPENAI_BASE_URL=http://127.0.0.1:11434/v1
 RAG_OPENAI_API_KEY=ollama-local
-RAG_CHAT_MODEL=jewelzufo/MiniCPM5-1B
+RAG_CHAT_MODEL=deepseek-r1:1.5b
 RAG_CHAT_MAX_TOKENS=2048
 RAG_CHAT_THINK=false
 ```
@@ -144,7 +166,7 @@ RAG_ZB/
 │  ├─ public/               # favicon 和社交预览资源
 │  └─ package.json          # 前端依赖与脚本
 ├─ scripts/                  # 启动和辅助脚本
-├─ storage/                  # PDF、解析结果、SQLite 和 Qdrant 数据
+├─ storage/                  # PDF、解析结果、SQLite、Qdrant 和派生 Wiki
 ├─ .models/                  # 可选本地解析模型
 ├─ .tools/                   # 项目级工具、缓存和运行依赖
 ├─ .env                      # 本地运行配置，不提交 Git
@@ -163,8 +185,8 @@ RAG_ZB/
 
 项目不做全局安装，也不会自动修改 `.env`、系统 PATH 或系统配置。
 
-默认解析链路使用 `pdf-extract-kit` 管线。解析模型和缓存固定在项目 `.models` 目录，避免污染系统缓存。
-如果只是调试轻量 OCR，可临时设置 `RAG_SCAN_PARSER=rapidocr`，但表格和图片位置效果会弱于 PDF-Extract-Kit。
+默认解析链路使用 `paddlevl` 管线（`RAG_DOCUMENT_PIPELINE` 切换，支持 pdf-extract-kit、mineru、rapidocr、pymupdf）。解析模型和缓存固定在项目 `.models` 目录，避免污染系统缓存。
+如果只是调试轻量 OCR，可临时设置 `RAG_DOCUMENT_PIPELINE=rapidocr`，但表格和图片位置效果会弱于 PaddleOCR-VL。
 
 ## 外部模型配置
 
@@ -278,6 +300,13 @@ $env:RAG_RERANK_MODEL = "your-rerank-model"
 
 当前效果相比早期单次检索更稳定：跨文档、对比和资料不足类问题会先生成多条查询改写，再从不同文档和维度补充召回，减少只命中文档开头总说明、前言或目录的情况。
 
+更多工程说明（完整技术文档见 [docs/README.md](docs/README.md)）：
+
+- [系统架构](docs/01-系统总览/系统架构.md)
+- [Agentic 检索与问答](docs/05-Agentic检索/AgenticRAG.md)
+- [Wiki 派生知识层](docs/06-Wiki知识层/Wiki派生知识层.md)
+- [Docker 与 vLLM 技术细节](docs/04-模型服务/Docker与vLLM技术细节.md)
+
 ## 开发验证
 
 后端：
@@ -298,7 +327,7 @@ $node = "C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\no
 ## 首版边界
 
 - 当前无登录、多租户和批量上传。
-- Qdrant Local 适用于初期少量规范；规模扩大后应迁移为独立 Qdrant 服务。
-- 默认本地 Embedding 为 `BAAI/bge-small-zh-v1.5`；模型下载后需重启后端并对已有资料执行 `reindex`。哈希向量仅作为显式调试后端保留。
-- 服务启动阶段会分别预热 BGE 和 Jina，消除第一条问答的模型冷启动等待；显存紧张时可在 `config.py` 中关闭对应预热开关。
+- Qdrant 以 Docker 服务部署（本地开发也可用嵌入式模式）；规模扩大后可迁移为独立 Qdrant 集群。
+- Embedding/Reranker 为 Qwen3-0.6B（vLLM 容器，`--profile gpu` 启动）；无 GPU 时稠密检索降级为 BM25 词法模式。哈希向量仅作为显式调试后端保留。
+- 换 Embedding 模型后需用 `scripts/rebuild_vectors.py` 重建 Qdrant 向量（chunk ID 不变，Wiki 锚点不受影响）。
 - 条件判断、合规和法律问题只提供文档依据，不替代专业审查或法律意见。

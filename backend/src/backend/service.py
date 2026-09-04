@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from sqlite3 import IntegrityError
 from urllib.parse import quote
@@ -32,10 +33,12 @@ class ChatContext:
     question: str
     query_type: str
     hits: list[SearchHit]
+    cited_hits: list[SearchHit]
     citations: list[Citation]
     evidence_status: str
     used_external_llm: bool
     retrieval_timings: dict[str, float | None]
+    retrieval_steps: list[dict[str, object]] = field(default_factory=list)
 
 
 def infer_metadata(filename: str) -> tuple[str, str | None, str | None]:
@@ -421,8 +424,24 @@ class RagService:
         document_ids: list[str] | None,
     ) -> ChatResponse:
         context = self.chat_context(question, document_ids)
-        answer = self.chat_provider.answer(question, context.hits, context.query_type).strip()
+        answer = self.chat_provider.answer(
+            question, context.cited_hits, context.query_type
+        ).strip()
         return self.chat_response_from_context(context, answer)
+
+    def _cited_hits(self, hits: Sequence[SearchHit]) -> list[SearchHit]:
+        """按相对相关性挑选引用：分数显著低于头部的证据剔除，避免机械固定条数。
+
+        rerank 分数越高越相关但量纲随后端变化，用相对阈值（头部分数的 50%）
+        才能同时适配外部 reranker 与本地词法降级；保底 3 条维持证据量。
+        """
+
+        limit = self.settings.answer_max_citations
+        if not hits:
+            return []
+        top = hits[0].score
+        selected = [hit for hit in hits[:limit] if hit.score >= top * 0.5]
+        return selected if len(selected) >= 3 else list(hits[: min(3, len(hits))])
 
     def chat_context(
         self,
@@ -433,16 +452,14 @@ class RagService:
         agent_run = self.retriever.run(question, document_ids)
         kind = agent_run.kind
         hits = agent_run.hits
+        cited_hits = self._cited_hits(hits)
         documents = {
             hit.document_id: self.repository.get_document(hit.document_id)
-            for hit in hits[: self.settings.answer_max_citations]
+            for hit in cited_hits
         }
         citations = [
             self._citation(index, hit, documents.get(hit.document_id), question)
-            for index, hit in enumerate(
-                hits[: self.settings.answer_max_citations],
-                1,
-            )
+            for index, hit in enumerate(cited_hits, 1)
         ]
         document_count = len({citation.document_id for citation in citations})
         if not citations:
@@ -456,6 +473,7 @@ class RagService:
             question=question,
             query_type=kind,
             hits=hits,
+            cited_hits=cited_hits,
             citations=citations,
             evidence_status=evidence_status,
             used_external_llm=self.chat_provider.external,
@@ -464,7 +482,30 @@ class RagService:
                 "recall_ms": agent_run.recall_ms,
                 "rerank_ms": agent_run.rerank_ms,
             },
+            retrieval_steps=self._retrieval_steps(agent_run.steps),
         )
+
+    def _retrieval_steps(self, steps: Sequence[object]) -> list[dict[str, object]]:
+        """把 AgentRun 步骤转成前端可展示的结构（文档 id 解析为标准号/标题）。"""
+
+        payloads: list[dict[str, object]] = []
+        for step in steps:
+            attributes = {
+                "tool": getattr(step, "tool", ""),
+                "query": getattr(step, "query", ""),
+                "reason": getattr(step, "reason", ""),
+            }
+            document_names: list[str] = []
+            for document_id in getattr(step, "document_ids", None) or []:
+                document = self.repository.get_document(document_id)
+                if document is None:
+                    continue
+                document_names.append(
+                    str(document.get("standard_no") or document.get("title") or document_id)
+                )
+            attributes["documents"] = document_names
+            payloads.append(attributes)
+        return payloads
 
     def chat_response_from_context(
         self,
@@ -473,12 +514,25 @@ class RagService:
     ) -> ChatResponse:
         return ChatResponse(
             answer=answer,
-            citations=context.citations,
+            citations=self._used_citations(context.citations, answer),
             evidence_status=context.evidence_status,
             query_type=context.query_type,
             used_external_llm=context.used_external_llm,
             trace_id=context.trace_id,
         )
+
+    def _used_citations(
+        self, citations: Sequence[Citation], answer: str
+    ) -> list[Citation]:
+        """只返回回答正文实际引用 [n] 的资料，引用卡片与正文标记一一对应。
+
+        LLM 未按规范标注引用时（used 为空）退回候选列表，
+        避免用户完全看不到证据来源。
+        """
+
+        used = {int(n) for n in re.findall(r"\[(\d+)\]", answer)}
+        selected = [citation for citation in citations if citation.index in used]
+        return selected if selected else list(citations)
 
     def _citation(
         self,

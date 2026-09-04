@@ -14,6 +14,16 @@ from .domain import Chunk, PageBlock
 CLAUSE_RE = re.compile(r"^\s*(\d+(?:\.\d+){2,5})\s*(.+)$")
 SECTION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s+([\u3400-\u9fff].{0,80})$")
 TABLE_RE = re.compile(r"<table\b.*?</table>", re.IGNORECASE | re.DOTALL)
+FRONT_MATTER_RE = re.compile(
+    r"(?:\u76ee\s*\u5f55|\u76ee\s*\u6b21|\bcontents\b|\u516c\u544a|\u6279\u51c6\u90e8\u95e8|\u53d1\u5e03\u90e8\u95e8|\u65bd\u884c\u65e5\u671f|"
+    r"\u4e3b\u7f16\u5355\u4f4d|\u53c2\u7f16\u5355\u4f4d|\u4e3b\u8981\u8d77\u8349\u4eba|\u4e3b\u8981\u5ba1\u67e5\u4eba|\u7f16\u5236\u7ec4|"
+    r"\bISBN\b|\u7edf\u4e00\u4e66\u53f7|\u5b9a\u4ef7|\u7248\u6743\u6240\u6709|\u51fa\u7248\u53d1\u884c|\u4e2d\u56fd\u8ba1\u5212\u51fa\u7248\u793e)",
+    re.IGNORECASE,
+)
+WATERMARK_RE = re.compile(
+    r"(?:^|\s)(?:https?://)?(?:www\.)?[\w.-]+\.(?:com|cn)(?:/\S*)?(?:\s|$)",
+    re.IGNORECASE,
+)
 
 
 def _positive_int(value: str | None, default: int) -> int:
@@ -75,19 +85,28 @@ def _clean(text: str) -> str:
 def _split_text(text: str, limit: int = 1400, overlap: int = 180) -> list[str]:
     if len(text) <= limit:
         return [text]
-    sentences = [part for part in re.split(r"(?<=[。！？；])", text) if part]
+    sentences = [part for part in re.split(r"(?<=[\u3002\uFF01\uFF1F\uFF1B])", text) if part]
     parts: list[str] = []
     current = ""
     for sentence in sentences:
+        if len(sentence) > limit:
+            if current.strip():
+                parts.append(current.strip())
+                current = ""
+            parts.extend(
+                sentence[index : index + 800].strip()
+                for index in range(0, len(sentence), 650)
+            )
+            continue
         if current and len(current) + len(sentence) > limit:
             parts.append(current.strip())
-            current = current[-overlap:] + sentence
+            with_overlap = current[-overlap:] + sentence
+            current = with_overlap if len(with_overlap) <= limit else sentence
         else:
             current += sentence
     if current.strip():
         parts.append(current.strip())
     return parts
-
 
 def _expanded_table_rows(html: str) -> list[list[str]]:
     parser = _TableParser()
@@ -147,6 +166,35 @@ def _table_row_texts(text: str) -> list[str]:
 
 
 def build_chunks(document_id: str, blocks: Iterable[PageBlock]) -> list[Chunk]:
+    materialized = sorted(
+        blocks, key=lambda item: (item.page, item.bbox[1] if item.bbox else 0)
+    )
+    chunks = _collect_chunks(document_id, materialized, skip_front_matter=True)
+    if not chunks:
+        # 整份文档没有可识别的标题或条款（如纯表格、无编号制度文件）时，
+        # 回退为不过滤前置页，避免生成空索引导致文档完全不可检索。
+        chunks = _collect_chunks(document_id, materialized, skip_front_matter=False)
+    clause_ids = {
+        chunk.clause_no: chunk.id
+        for chunk in chunks
+        if chunk.clause_no and "#" not in chunk.clause_no
+    }
+    resolved: list[Chunk] = []
+    for chunk in chunks:
+        base_clause = (chunk.clause_no or "").split("#", 1)[0]
+        parent_id = None
+        if "." in base_clause:
+            parent_id = clause_ids.get(base_clause.rsplit(".", 1)[0])
+        resolved.append(replace(chunk, parent_id=parent_id))
+    return resolved
+
+
+def _collect_chunks(
+    document_id: str,
+    blocks: list[PageBlock],
+    *,
+    skip_front_matter: bool,
+) -> list[Chunk]:
     chunks: list[Chunk] = []
     chapter_path: list[str] = []
     current_clause: str | None = None
@@ -154,7 +202,7 @@ def build_chunks(document_id: str, blocks: Iterable[PageBlock]) -> list[Chunk]:
     current_start = 1
     current_end = 1
     current_printed_page: str | None = None
-    document_zone = "normative"
+    document_zone = "front_matter"
     current_source = document_zone
 
     def flush() -> None:
@@ -186,10 +234,40 @@ def build_chunks(document_id: str, blocks: Iterable[PageBlock]) -> list[Chunk]:
         current_text = []
         current_clause = None
 
-    for block in sorted(blocks, key=lambda item: (item.page, item.bbox[1] if item.bbox else 0)):
+    for block in blocks:
         text = _clean(block.text)
         if not text:
             continue
+
+        section_match = SECTION_RE.match(text)
+        looks_like_numbered_heading = (
+            section_match
+            and section_match.group(1).count(".") <= 1
+            and len(text) <= 40
+            and not text.endswith(("\u3002", "\uFF01", "\uFF1F", "\uFF1B", ":"))
+        )
+        clause_match = CLAUSE_RE.match(text)
+        is_heading = bool(CHINESE_HEADING_RE.match(text) or looks_like_numbered_heading)
+        if document_zone == "front_matter":
+            # 表格/图片是正文信号，直接进入正文区，避免纯表格文档被清空。
+            is_content_block = block.block_type in {
+                "table",
+                "table_body",
+                "image",
+                "img",
+                "figure",
+            }
+            if is_content_block or not skip_front_matter or is_heading or clause_match:
+                document_zone = "normative"
+                current_source = document_zone
+            else:
+                continue
+        if block.block_type == "page_number" or WATERMARK_RE.search(text):
+            continue
+        if FRONT_MATTER_RE.search(text) and not clause_match:
+            flush()
+            continue
+
         if "条文说明" in text and len(text) <= 20:
             flush()
             document_zone = "commentary"
@@ -250,17 +328,4 @@ def build_chunks(document_id: str, blocks: Iterable[PageBlock]) -> list[Chunk]:
         current_end = block.page
         current_text.append(text)
     flush()
-
-    clause_ids = {
-        chunk.clause_no: chunk.id
-        for chunk in chunks
-        if chunk.clause_no and "#" not in chunk.clause_no
-    }
-    resolved: list[Chunk] = []
-    for chunk in chunks:
-        base_clause = (chunk.clause_no or "").split("#", 1)[0]
-        parent_id = None
-        if "." in base_clause:
-            parent_id = clause_ids.get(base_clause.rsplit(".", 1)[0])
-        resolved.append(replace(chunk, parent_id=parent_id))
-    return resolved
+    return chunks

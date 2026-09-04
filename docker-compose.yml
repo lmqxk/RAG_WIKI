@@ -1,0 +1,171 @@
+# 规智库一键部署：Qdrant + 后端 API + 前端（+ 可选 GPU 模型服务）
+# 用法：docker compose up -d --build   或   powershell scripts/deploy.ps1
+#
+# 端口与配置从根目录 .env 读取（RAG_API_PORT / RAG_FRONTEND_PORT）。
+# 下面 environment 中的覆盖项优先级高于 .env（容器内地址与宿主机不同）：
+#   - Qdrant 走 compose 内部网络服务名
+#   - Ollama / PaddleVL 在宿主机上，用 host.docker.internal 访问
+#   - 若以后把 LLM 或解析服务迁到远程服务器，请同步修改这里的覆盖值。
+#
+# 可拆卸 GPU 模型服务（--profile gpu）：
+#   docker compose --profile gpu up -d   启动本机 embedding + reranker
+#   不加 profile 时只启动基础三件套，embedding 自动降级为 BM25 词法检索
+name: rag-zb
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.16.2
+    container_name: rag-zb-qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - ./storage/qdrant-server:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  embedding:
+    image: vllm/vllm-openai:latest
+    container_name: rag-zb-embedding
+    restart: unless-stopped
+    profiles: ["gpu"]
+    gpus: all
+    command:
+      - Qwen/Qwen3-Embedding-0.6B
+      - --served-model-name
+      - qwen3-embedding
+      - --max-model-len
+      - "4096"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - "0.2"
+    environment:
+      VLLM_USE_MODELSCOPE: "1"
+    volumes:
+      - rag-zb-models:/root/.cache
+    ports:
+      - "127.0.0.1:8010:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status < 500 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 600s
+
+  reranker:
+    image: vllm/vllm-openai:latest
+    container_name: rag-zb-reranker
+    restart: unless-stopped
+    profiles: ["gpu"]
+    gpus: all
+    command:
+      - Qwen/Qwen3-Reranker-0.6B
+      - --hf-overrides
+      - '{"architectures": ["Qwen3ForSequenceClassification"], "classifier_from_token": ["no", "yes"], "is_original_qwen3_reranker": true}'
+      - --served-model-name
+      - qwen3-reranker
+      - --max-model-len
+      - "4096"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - "0.2"
+    environment:
+      VLLM_USE_MODELSCOPE: "1"
+    volumes:
+      - rag-zb-models:/root/.cache
+    ports:
+      - "127.0.0.1:8011:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status < 500 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 600s
+
+  backend:
+    build: ./backend
+    container_name: rag-zb-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      RAG_API_HOST: 0.0.0.0
+      RAG_API_PORT: 8008
+      RAG_QDRANT_URL: http://qdrant:6333
+      RAG_OPENAI_BASE_URL: http://host.docker.internal:11434/v1/
+      RAG_PADDLEVL_API_URL: http://host.docker.internal:8080
+      RAG_PADDLEVL_AUTO_START: "false"
+      RAG_EMBEDDING_BASE_URL: http://embedding:8000/v1
+      RAG_EMBEDDING_API_KEY: ${RAG_EMBEDDING_API_KEY:-local}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-qwen3-embedding}
+      RAG_RERANK_BASE_URL: http://reranker:8000/v1/rerank
+      RAG_RERANK_API_KEY: ${RAG_RERANK_API_KEY:-local}
+      RAG_RERANK_MODEL: ${RAG_RERANK_MODEL:-qwen3-reranker}
+    volumes:
+      - ./storage:/app/storage
+    ports:
+      - "${RAG_API_PORT:-8008}:8008"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8008/api/health', timeout=3).status < 500 else 1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_PORT: ${RAG_API_PORT:-8008}
+    container_name: rag-zb-frontend
+    restart: unless-stopped
+    ports:
+      - "${RAG_FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  rag-zb-models:

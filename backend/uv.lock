@@ -60,6 +60,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "huggingface-hub" },
     { name = "numpy" },
     { name = "pydantic-settings" },
     { name = "pymupdf" },
@@ -89,6 +90,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.140.13" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "huggingface-hub", specifier = ">=0.30.0" },
     { name = "mineru", extras = ["pipeline"], marker = "extra == 'mineru'", specifier = ">=3.4.4" },
     { name = "numpy", specifier = ">=1.24,<2.4" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },

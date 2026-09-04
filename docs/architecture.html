@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>规智库 · 架构运行链</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #F7F7F8;
+  --surface-muted: #EFEFF2;
+  --bg: #FFFFFF;
+  --text: #171717;
+  --text-muted: #52525B;
+  --border: rgba(23, 23, 23, 0.12);
+  --brand: #4B3FE3;
+  --brand-soft: #F2F7FF;
+  --brand-soft-strong: #E5EAFF;
+  --brand-text: #1A1759;
+  --accent: #27D2BF;
+  --accent-soft: #EAFBF8;
+  --accent-text: #0F766E;
+  --radius: 8px;
+  --radius-card: 12px;
+  --radius-full: 999px;
+  --font-sans: "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface: #171717;
+    --surface-muted: #262626;
+    --bg: #0D0D0D;
+    --text: #E5E5E5;
+    --text-muted: #A1A1AA;
+    --border: rgba(229, 229, 229, 0.12);
+    --brand: #6054F1;
+    --brand-soft: #1A1759;
+    --brand-soft-strong: #3C2ECA;
+    --brand-text: #CFD8FF;
+    --accent-soft: #123F3C;
+    --accent-text: #CCFBF1;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font: 400 14px/20px var(--font-sans);
+  color: var(--text);
+  background: var(--bg);
+  display: flex;
+  justify-content: center;
+  padding: 48px 24px;
+}
+.page { width: 100%; max-width: 860px; }
+header { margin-bottom: 32px; }
+h1 { font-size: 24px; line-height: 32px; font-weight: 600; }
+.subtitle { color: var(--text-muted); font-size: 14px; margin-top: 8px; }
+.badges { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.badge {
+  font-size: 12px; line-height: 18px; padding: 4px 12px;
+  border-radius: var(--radius-full);
+  background: var(--surface-muted); border: 1px solid var(--border);
+}
+.badge.brand { background: var(--brand-soft); border-color: var(--brand); color: var(--brand-text); }
+.badge.accent { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+figure {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 32px;
+}
+figure svg { display: block; width: 100%; height: auto; }
+.legend { display: flex; gap: 24px; margin-top: 20px; flex-wrap: wrap; font-size: 12px; color: var(--text-muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.key { display: inline-block; width: 28px; height: 0; border-top: 2px solid var(--text-muted); }
+.key.brand { border-top: 2px dashed var(--brand); }
+.key.accent { border-top: 2px dashed var(--accent); }
+section { margin-top: 32px; }
+h2 { font-size: 16px; line-height: 24px; font-weight: 600; margin-bottom: 12px; }
+.chain {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 20px 24px;
+  background: var(--surface);
+}
+.chain ol { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+.chain li { line-height: 22px; }
+.chain code {
+  font: 500 12px/18px ui-monospace, "SF Mono", Consolas, monospace;
+  background: var(--surface-muted); padding: 2px 6px; border-radius: 4px;
+}
+footer { margin-top: 32px; color: var(--text-muted); font-size: 12px; text-align: center; }
+
+.wt { fill: var(--text); font: 600 16px/24px var(--font-sans); }
+.ws { fill: var(--text-muted); font: 400 12px/18px var(--font-sans); }
+.th { fill: var(--text); font: 500 14px/20px var(--font-sans); }
+.ts { fill: var(--text-muted); font: 400 12px/18px var(--font-sans); }
+g.c-brand > rect { fill: var(--brand-soft); stroke: var(--brand); stroke-width: 1.4; }
+g.c-brand > .th { fill: var(--brand-text); }
+g.c-brand > .ts { fill: var(--brand); }
+g.c-accent > rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.4; }
+g.c-accent > .th { fill: var(--accent-text); }
+.n { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+.next { fill: var(--surface-muted); stroke: var(--border); stroke-width: 1; }
+.grp { fill: var(--surface); stroke: var(--border); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.chip { fill: var(--surface-muted); stroke: var(--border); stroke-width: 1; }
+.chip-b { fill: var(--brand-soft-strong); stroke: var(--brand); stroke-width: 1; }
+.cap { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+.arr { stroke: var(--text-muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+.arr-brand { stroke: var(--brand); stroke-width: 1.8; stroke-dasharray: 6 5; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+.arr-accent { stroke: var(--accent); stroke-width: 1.8; stroke-dasharray: 6 5; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .arr-brand { animation: flowdash 1.2s linear infinite; }
+  @keyframes flowdash { to { stroke-dashoffset: -22; } }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>规智库 · 架构运行链</h1>
+    <p class="subtitle">Agent 规划 → 混合检索 → 重排 → LLM 流式生成 · Wiki 概念层提供知识关联</p>
+    <div class="badges">
+      <span class="badge brand">查询主链</span>
+      <span class="badge accent">Wiki 知识关联</span>
+      <span class="badge">数据持久化</span>
+    </div>
+  </header>
+
+  <figure>
+    <svg viewBox="0 0 720 810" role="img" aria-label="规智库架构运行链">
+      <defs>
+        <marker id="ah-n" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M1 1 L7 4 L1 7 Z" fill="var(--text-muted)"/></marker>
+        <marker id="ah-b" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M1 1 L7 4 L1 7 Z" fill="var(--brand)"/></marker>
+        <marker id="ah-a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M1 1 L7 4 L1 7 Z" fill="var(--accent)"/></marker>
+      </defs>
+
+      <text class="wt" x="40" y="34">架构总览</text>
+      <text class="ws" x="40" y="56">前端 · 后端 API · Agent · 检索 · 生成 · 存储与知识层</text>
+
+      <path class="arr" d="M230 124 L230 156" marker-end="url(#ah-n)"/>
+      <path class="arr" d="M230 224 L230 248" marker-end="url(#ah-n)"/>
+      <path class="arr" d="M230 364 L230 396" marker-end="url(#ah-n)"/>
+      <path class="arr" d="M370 450 L440 450" marker-end="url(#ah-n)"/>
+      <rect class="cap" x="372" y="428" width="66" height="16" rx="8"/>
+      <text class="ts" x="405" y="440" text-anchor="middle">Top-K 证据</text>
+      <path class="arr-brand" d="M525 406 L525 94 L320 94" marker-end="url(#ah-b)"/>
+      <rect class="cap" x="366" y="68" width="112" height="16" rx="8"/>
+      <text class="ts" x="422" y="80" text-anchor="middle">流式答案 + 引用</text>
+      <path class="arr" d="M230 508 L230 560" marker-end="url(#ah-n)"/>
+      <rect class="cap" x="240" y="520" width="36" height="16" rx="8"/>
+      <text class="ts" x="258" y="532" text-anchor="middle">读取</text>
+      <path class="arr" d="M460 632 L410 632" marker-end="url(#ah-n)"/>
+      <path class="arr-accent" d="M150 701 L90 701 L90 296 L140 296" marker-end="url(#ah-a)"/>
+      <text class="ts" transform="rotate(-90 80 500)" x="80" y="500" text-anchor="middle" fill="var(--accent)">概念定位 · 别名扩展</text>
+
+      <rect class="next" x="140" y="64" width="180" height="60" rx="30"/>
+      <text class="th" x="230" y="90" text-anchor="middle">前端 · :3000</text>
+      <text class="ts" x="230" y="108" text-anchor="middle">智能问答 · 知识网络</text>
+
+      <rect class="n" x="140" y="156" width="180" height="68" rx="8"/>
+      <text class="th" x="230" y="182" text-anchor="middle">后端 API · :8008</text>
+      <text class="ts" x="230" y="200" text-anchor="middle">/api/chat/stream</text>
+      <text class="ts" x="230" y="216" text-anchor="middle">/api/wiki/*</text>
+
+      <g class="c-brand">
+        <rect x="140" y="248" width="180" height="116" rx="8"/>
+        <text class="th" x="230" y="274" text-anchor="middle">Agent 规划器</text>
+        <text class="ts" x="230" y="294" text-anchor="middle">LLM 规划多步检索</text>
+        <rect class="chip" x="166" y="304" width="60" height="22" rx="11"/>
+        <text class="ts" x="196" y="319" text-anchor="middle">全局检索</text>
+        <rect class="chip" x="234" y="304" width="60" height="22" rx="11"/>
+        <text class="ts" x="264" y="319" text-anchor="middle">定向检索</text>
+        <rect class="chip-b" x="167" y="334" width="126" height="22" rx="11"/>
+        <text class="ts" x="230" y="349" text-anchor="middle">概念定位（Wiki）</text>
+      </g>
+
+      <rect class="grp" x="130" y="396" width="240" height="112" rx="12"/>
+      <text class="th" x="142" y="418">混合检索 + 重排</text>
+      <rect class="chip" x="142" y="428" width="216" height="22" rx="11"/>
+      <text class="ts" x="250" y="443" text-anchor="middle">BM25 · SQLite FTS5</text>
+      <rect class="chip" x="142" y="454" width="216" height="22" rx="11"/>
+      <text class="ts" x="250" y="469" text-anchor="middle">向量检索 · Qdrant</text>
+      <rect class="chip" x="142" y="480" width="216" height="22" rx="11"/>
+      <text class="ts" x="250" y="495" text-anchor="middle">Rerank 重排</text>
+
+      <rect class="n" x="440" y="406" width="170" height="60" rx="8"/>
+      <text class="th" x="525" y="430" text-anchor="middle">LLM 流式生成</text>
+      <text class="ts" x="525" y="450" text-anchor="middle">答案 + 引用 [1][2]</text>
+
+      <rect class="grp" x="130" y="560" width="280" height="170" rx="12"/>
+      <text class="th" x="142" y="584">存储与知识层</text>
+      <rect class="chip" x="150" y="596" width="240" height="34" rx="8"/>
+      <text class="ts" x="270" y="617" text-anchor="middle">SQLite · chunks + FTS5 索引</text>
+      <rect class="chip" x="150" y="640" width="240" height="34" rx="8"/>
+      <text class="ts" x="270" y="661" text-anchor="middle">Qdrant · 向量索引</text>
+      <g class="c-accent">
+        <rect x="150" y="684" width="240" height="34" rx="8"/>
+        <text class="th" x="270" y="705" text-anchor="middle">Wiki 概念层 · 词典 / 关系图 / 别名</text>
+      </g>
+
+      <rect class="next" x="460" y="600" width="170" height="64" rx="32"/>
+      <text class="th" x="545" y="624" text-anchor="middle">文档入库</text>
+      <text class="ts" x="545" y="644" text-anchor="middle">PDF → 解析 → 切块</text>
+
+      <path class="arr" d="M130 762 L154 762"/>
+      <text class="ts" x="160" y="766">调用 / 数据依赖</text>
+      <path class="arr-brand" d="M290 762 L314 762"/>
+      <text class="ts" x="320" y="766">流式响应路径</text>
+      <path class="arr-accent" d="M440 762 L464 762"/>
+      <text class="ts" x="470" y="766">Wiki 知识关联</text>
+    </svg>
+    <div class="legend">
+      <span><i class="key"></i>调用 / 数据依赖</span>
+      <span><i class="key brand"></i>流式响应路径</span>
+      <span><i class="key accent"></i>Wiki 知识关联</span>
+    </div>
+  </figure>
+
+  <section>
+    <h2>查询运行链</h2>
+    <div class="chain">
+      <ol>
+        <li>用户在前端提问，请求发往 <code>/api/chat/stream</code></li>
+        <li>Agent 规划器调用 LLM 决定检索策略：全局检索 / 定向检索 / 概念定位（Wiki）</li>
+        <li>Wiki 概念层提供别名扩展，同一概念的不同叫法都能命中；概念定位直接召回锚点 chunks</li>
+        <li>混合检索并行执行 BM25（SQLite FTS5）与向量检索（Qdrant），结果经 Rerank 重排</li>
+        <li>Top-K 证据交给 LLM 流式生成带引用的答案，逐字推送到前端</li>
+        <li>前端渲染答案、可点击引用与检索过程步骤</li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <h2>知识关联链（Wiki 概念层）</h2>
+    <div class="chain">
+      <ol>
+        <li>文档入库时，LLM 分批抽取概念、别名与概念间关系</li>
+        <li>概念锚点指向真实入库 chunks，形成"概念 ↔ 条文"的双向索引</li>
+        <li>查询时向 Agent 提供概念定位工具与别名查询扩展</li>
+        <li>跨文档概念（如"防火间距"同时锚定多本规范）构成知识网络，前端"知识网络"Tab 可浏览</li>
+      </ol>
+    </div>
+  </section>
+
+  <footer>规智库 RAG 系统 · 架构运行链 · 生成于 2026-09</footer>
+</div>
+</body>
+</html>

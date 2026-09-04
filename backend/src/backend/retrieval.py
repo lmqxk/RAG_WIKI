@@ -54,8 +54,6 @@ def focused_query(question: str, kind: str) -> str:
         focused = focused.replace(noise, " ")
     focused = re.sub(r"[，。；：、？！,.!?;:]+", " ", focused)
     focused = re.sub(r"\s+", " ", focused).strip()
-    if "附设" in focused and "建筑内" not in focused:
-        focused = focused.replace("附设", "附设在建筑内的", 1)
     return focused or question
 
 

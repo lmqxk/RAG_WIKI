@@ -7,6 +7,7 @@ import logging
 import time
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -36,8 +37,25 @@ from .schemas import (
 )
 from .service import RagService
 from .vector_index import VectorIndex
+from .wiki import WikiManager
 
 logger = logging.getLogger("uvicorn.error")
+
+
+def configure_file_logging() -> Path:
+    log_path = get_settings().data_dir / "logs" / "backend.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    for logger_name in ("uvicorn", "uvicorn.access"):
+        target = logging.getLogger(logger_name)
+        if any(getattr(handler, "_rag_log_file", None) == log_path for handler in target.handlers):
+            continue
+        handler = RotatingFileHandler(
+            log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+        handler._rag_log_file = log_path  # type: ignore[attr-defined]
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        target.addHandler(handler)
+    return log_path
 
 
 def build_components(
@@ -48,6 +66,7 @@ def build_components(
     VectorIndex,
     IngestionManager,
     RagService,
+    WikiManager,
 ]:
     database = Database(settings.sqlite_path)
     database.initialize()
@@ -57,11 +76,12 @@ def build_components(
     vector_index = VectorIndex(settings, embeddings)
     reranker = RerankProvider(settings)
     retriever = HybridRetriever(settings, repository, vector_index, reranker)
-    agentic_retriever = AgenticRetriever(settings, repository, retriever)
     chat = ChatProvider(settings)
-    ingestion = IngestionManager(settings, repository, parser, vector_index)
+    wiki = WikiManager(settings, chat)
+    agentic_retriever = AgenticRetriever(settings, repository, retriever, wiki)
+    ingestion = IngestionManager(settings, repository, parser, vector_index, wiki)
     service = RagService(settings, repository, ingestion, agentic_retriever, chat)
-    return repository, parser, vector_index, ingestion, service
+    return repository, parser, vector_index, ingestion, service, wiki
 
 
 def warmup_embeddings(settings: Settings, vector_index: VectorIndex) -> None:
@@ -76,8 +96,10 @@ def warmup_embeddings(settings: Settings, vector_index: VectorIndex) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log_path = configure_file_logging()
+    logger.info("file_logging_enabled path=%s", log_path)
     settings = get_settings()
-    repository, parser, vector_index, ingestion, service = build_components(settings)
+    repository, parser, vector_index, ingestion, service, wiki = build_components(settings)
     warmup_embeddings(settings, vector_index)
     app.state.settings = settings
     app.state.repository = repository
@@ -85,6 +107,7 @@ async def lifespan(app: FastAPI):
     app.state.vector_index = vector_index
     app.state.ingestion = ingestion
     app.state.service = service
+    app.state.wiki = wiki
     ingestion.recover()
     yield
     ingestion.shutdown()
@@ -102,8 +125,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         settings.frontend_origin,
-        "http://127.0.0.1:3000",
-        "http://localhost:3000",
+        f"http://127.0.0.1:{settings.frontend_port}",
+        f"http://localhost:{settings.frontend_port}",
     ],
     allow_credentials=False,
     allow_methods=["*"],
@@ -144,7 +167,6 @@ def health(request: Request) -> HealthOut:
         mineru_available=parser.mineru.available(),
         rapidocr_available=parser.rapidocr.available(),
         document_pipeline=app_settings.document_pipeline,
-        scan_parser=app_settings.scan_parser,
     )
 
 
@@ -216,13 +238,36 @@ def get_job(job_id: str, request: Request) -> dict[str, object]:
     return job
 
 
+def resolve_storage_path(raw: str, subdir: str, request: Request) -> Path | None:
+    """按入库时保存的绝对路径定位文件；容器部署时绝对路径不可用，回退到挂载目录。
+
+    数据库记录的是入库主机的绝对路径（如 E:\\...\\uploads\\x.pdf），
+    Docker 容器内该路径不存在，需按文件名回退到挂载的 storage 子目录。
+    历史数据可能在 uploads 下还有 default-org 等子目录，
+    额外保留 subdir 之后的相对层级回退，避免按文件名找不到。
+    Linux 容器中反斜杠不是路径分隔符，须先归一化才能取出文件名。
+    """
+
+    settings: Settings = request.app.state.settings
+    normalized = raw.replace("\\", "/")
+    candidates = [
+        Path(normalized),
+        settings.data_dir / subdir / Path(normalized).name,
+    ]
+    marker = f"/{subdir}/"
+    offset = normalized.rfind(marker)
+    if offset != -1:
+        candidates.append(settings.data_dir / subdir / normalized[offset + len(marker):])
+    return next((candidate for candidate in candidates if candidate.exists()), None)
+
+
 @app.get("/api/documents/{document_id}/file")
 def get_document_file(document_id: str, request: Request) -> FileResponse:
     document = repository(request).get_document(document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="文档不存在")
-    path = Path(str(document["stored_path"]))
-    if not path.exists():
+    path = resolve_storage_path(str(document["stored_path"]), "uploads", request)
+    if path is None:
         raise HTTPException(status_code=404, detail="PDF 文件不存在")
     return FileResponse(
         path,
@@ -241,7 +286,12 @@ def get_document_asset(
     document = repository(request).get_document(document_id)
     if document is None or not document.get("parsed_path"):
         raise HTTPException(status_code=404, detail="解析产物不存在")
-    parsed_path = Path(str(document["parsed_path"])).resolve()
+    parsed_dir = resolve_storage_path(
+        str(document["parsed_path"]), "parsed", request
+    )
+    if parsed_dir is None:
+        raise HTTPException(status_code=404, detail="解析产物不存在")
+    parsed_path = parsed_dir.resolve()
     asset_path = (parsed_path / path).resolve()
     try:
         asset_path.relative_to(parsed_path)
@@ -269,6 +319,82 @@ def reindex_document(document_id: str, request: Request) -> dict[str, object]:
     job = repo.get_job(job_id)
     assert job is not None
     return job
+
+
+@app.get("/api/wiki/concepts")
+def wiki_concepts(request: Request) -> list[dict[str, object]]:
+    wiki: WikiManager = request.app.state.wiki
+    return wiki.concepts_overview()
+
+
+@app.get("/api/wiki/concepts/{name}")
+def wiki_concept_detail(name: str, request: Request) -> dict[str, object]:
+    wiki: WikiManager = request.app.state.wiki
+    repository_ = repository(request)
+    target = next(
+        (
+            entry
+            for entry in wiki.concept_lexicon()
+            if str(entry["name"]) == name or name in entry["aliases"]
+        ),
+        None,
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="概念不存在")
+    anchors = target["anchors"]
+    assert isinstance(anchors, dict)
+    chunk_ids = [chunk_id for ids in anchors.values() for chunk_id in ids]
+    hits = repository_.get_chunks(chunk_ids)
+    by_document: dict[str, list[dict[str, object]]] = {}
+    for hit in hits:
+        by_document.setdefault(hit.document_id, []).append(
+            {
+                "chunk_id": hit.chunk_id,
+                "clause_no": hit.clause_no,
+                "chapter_path": hit.chapter_path,
+                "page_start": hit.page_start,
+                "page_end": hit.page_end,
+                "text": hit.text,
+            }
+        )
+    document_info = {
+        str(document["id"]): document for document in repository_.list_documents()
+    }
+    documents = [
+        {
+            "document_id": document_id,
+            "title": document_info.get(document_id, {}).get("title", document_id),
+            "standard_no": document_info.get(document_id, {}).get("standard_no"),
+            "anchors": chunk_refs,
+        }
+        for document_id, chunk_refs in by_document.items()
+    ]
+    documents.sort(key=lambda item: -len(item["anchors"]))
+    return {
+        "name": target["name"],
+        "aliases": target["aliases"],
+        "documents": documents,
+        "related": wiki.related_pages(f"concepts/{target['name']}"),
+    }
+
+
+@app.get("/api/wiki/graph")
+def wiki_graph(
+    request: Request,
+    min_score: Annotated[float, Query(ge=0)] = 0.0,
+    max_links: Annotated[int, Query(ge=1, le=1000)] = 300,
+) -> dict[str, object]:
+    wiki: WikiManager = request.app.state.wiki
+    return wiki.graph_summary(min_score=min_score, max_links=max_links)
+
+
+@app.get("/api/wiki/pages/{page_id:path}")
+def wiki_page(page_id: str, request: Request) -> dict[str, object]:
+    wiki: WikiManager = request.app.state.wiki
+    page = wiki.read_page(page_id)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Wiki 页面不存在")
+    return page
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -311,6 +437,7 @@ def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse:
                     "evidence_status": context.evidence_status,
                     "used_external_llm": context.used_external_llm,
                     "citation_count": len(context.citations),
+                    "retrieval_steps": context.retrieval_steps,
                     "retrieval_ms": round((retrieved_at - started_at) * 1000, 2),
                     **{
                         name: round(value, 2) if value is not None else None
@@ -320,7 +447,7 @@ def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse:
             )
             for delta in service.chat_provider.answer_stream(
                 payload.question,
-                context.hits,
+                context.cited_hits,
                 context.query_type,
             ):
                 if first_token_at is None:
@@ -349,7 +476,7 @@ def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse:
             if context.used_external_llm and not answer_parts:
                 fallback_answer = service.chat_provider.answer(
                     payload.question,
-                    context.hits,
+                    context.cited_hits,
                     context.query_type,
                 )
                 if fallback_answer:

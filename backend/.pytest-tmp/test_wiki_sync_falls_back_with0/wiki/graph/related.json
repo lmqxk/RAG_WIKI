@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-09-03T07:57:50.193209+00:00",
+  "model": {
+    "direct_wikilink": 3.0,
+    "source_overlap": 4.0,
+    "adamic_adar": 1.5,
+    "type_affinity": 1.0
+  },
+  "pages": [
+    {
+      "id": "documents/doc-1",
+      "type": "document",
+      "path": "E:\\lmq\\RAG_ZB\\backend\\.pytest-tmp\\test_wiki_sync_falls_back_with0\\wiki\\documents\\doc-1.md"
+    }
+  ],
+  "relations": []
+}
