@@ -101,3 +101,11 @@
 - 实现：单行改动 `markdown-message.tsx` L90 `{children}` → `[{children}]`；重建前端镜像并重启容器。
 - 同类扩展：`EvidenceSheet` 卡片徽章本就是 `[n]` 样式，与此统一；wiki 工作区共用 MarkdownMessage 组件自动生效。
 - 验证：浏览器实测引用链接 textContent 为 `[1]`，computedStyle 确认 1px 边框 + 半透明背景；点击后资料面板弹出、卡片高亮、预览 PDF 正常。
+
+## 2026-09-04 feature: 新增《技术选型问答》文档（Q2 切分细节与 Q6 幻觉防线扩充）
+
+- 需求：RAG 全链路技术决策需要一份对外可展示的 Q&A 口径文档（面试/技术汇报两用）；用户反馈 Q2 三级切分机制不够清晰、Q6 缺少提示词约束内容。
+- 方案：`docs/01-系统总览/技术选型问答.md` 按六环节（解析→切分→Embedding→向量库→重排→生成）+ 整体原则组织；Q2/Q6 依据实际代码补充。
+- 实现：Q2 增加 L1/L2/L3 超长条款三级处理表（1400/180/800/650 参数来自 chunking.py 实测）、真实 chunk 元数据示例（8.4.5 与 8.4.5#2 续块、表格 chunk，取自 storage/rag.db 真实数据）、条文说明单向分区状态机小节；Q6 重构为五层防线（提示词七规则表 / 结构化证据 JSON / temperature 0.1 / _used_citations 校验 / 抽取式降级）；登记 docs/README.md 索引。
+- 同类扩展：文档口吻为对外 Q&A 风格，不含内部轶事；全库统计（2170 chunks、18 续块、1134 正文/1036 条文说明）与数据库一致。
+- 验证：文中参数与 chunking.py/prompt.py/providers.py/repository.py 逐项核对一致；真实示例经 SQLite 查询验证。
