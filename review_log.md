@@ -85,3 +85,11 @@
 - 修复：编辑器格式化——统一表格列对齐、列表项之间补空行、`max_len`/`0~1` 等行内代码与波浪号转义（`max\_len`、`32\~1024`）。
 - 同类回扫：`git diff` 全量核对仅含格式变化（85 增 / 74 删均为排版行），无实质内容增删；docs/ 其余文档格式抽查一致。
 - 验证：逐段比对 diff 确认技术参数、结论表格内容与提交 3c46a5f 版本完全一致。
+
+## 2026-09-04 fix: 回答正文行内引用 [n] 点击无响应
+
+- 表层问题：回答正文中的 [n] 引用标记渲染成不可点击的普通链接（href 为空），点击无反应；「查看 N 条原文资料」按钮和资料面板跳 PDF 却正常。
+- 根因：`markdown-message.tsx` 用自定义 URI 协议 `[n](rag-citation:n)` 生成行内引用链接，但 react-markdown v9+ 默认 `urlTransform`（defaultUrlTransform）只放行 http/https/irc/ircs/mailto/xmpp 协议，`rag-citation:` 被清洗成空字符串；自定义 `a` 渲染器的 `href.startsWith("rag-citation:")` 判断因此永远不命中，回落到通用锚点分支。上一轮只修了后端 `resolve_storage_path`（PDF 文件接口 404），行内引用的前端渲染问题一直存在。
+- 修复：`markdown-message.tsx` 给 ReactMarkdown 传入 `urlTransform={(url) => url.startsWith("rag-citation:") ? url : defaultUrlTransform(url)}`，放行引用协议、其余 URL 走默认消毒。
+- 同类回扫：全项目搜索其他自定义协议链接（仅 markdown-message.tsx 一处）；浏览器端到端复核「[n] 点击 → 资料面板弹出 → 卡片 ring 高亮 → 预览 PDF 第 N 页新标签页 #page=N 跳页」完整链路。
+- 验证：重新构建前端镜像并重启容器后，浏览器实测回答完成时 `a[href^="rag-citation:"]` 数量 13（修复前恒为 0）；点击 [1] 弹出原文资料 Sheet 且对应卡片高亮；PDF 在新标签页打开并定位到引用页码。

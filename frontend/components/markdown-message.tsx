@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 export type InlineCitation = {
@@ -36,6 +36,7 @@ export function MarkdownMessage({ content, citations, onCitationClick }: Markdow
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
+      urlTransform={(url) => (url.startsWith("rag-citation:") ? url : defaultUrlTransform(url))}
       components={{
         p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
         strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
