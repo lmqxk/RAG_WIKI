@@ -250,6 +250,7 @@ class AgenticRetriever:
                     "model": self.settings.chat_model,
                     "temperature": 0,
                     "max_tokens": 1200,
+                    "thinking": {"type": "disabled"},
                     "messages": [
                         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
                         {"role": "user", "content": json.dumps(user, ensure_ascii=False)},

@@ -30,7 +30,7 @@ docs/
 
 `review_log.md` 位于项目根目录，记录每个 git 提交周期的修改过程。
 
-**每次 git 提交前必须先迭代本文件**，按模板追加条目（新条目放在文件末尾，按时间递增）：
+**每次 git 提交前必须先迭代本文件**，按模板新增条目（新条目插在文件开头、紧跟文件说明之后，全文件按时间倒序，最新在最上）：
 
 fix 模板：
 
@@ -66,9 +66,10 @@ feature 模板：
 - Embedding 用 Qwen3-Embedding-0.6B（1024 维，query 侧加 Instruct 前缀），Rerank 用 Qwen3-Reranker-0.6B（`<Instruct>/<Query>/<Document>` 模板）。
 - 模型服务必须容器化（vLLM，`--profile gpu` 可拆卸）。
 - 日志统一写 `storage/logs/`，禁止新建根目录 `logs/`。
+- 容器运行时不从宿主机直接打开 `storage/` 下的 SQLite（会触发 Docker Desktop 文件共享锁，导致容器内 `unable to open database file`；需查库进容器操作，宿主机侧只做文件复制）。
 - 修改 `.env`、密钥、数据库结构、删除文件前先向用户确认。
 
 ## 4. 环境备忘
 
-- Python 环境：`backend/.venv`（uv 管理，无 pip）；测试命令用 `E:\lmq\RAG_ZB\.tools\uv\bin\uv.exe run --project backend pytest backend\tests -q`。
+- Python 环境：`backend/.venv`（uv 管理，无 pip）；测试命令用 `.\backend\.venv\Scripts\python.exe -m pytest backend\tests -q`。
 - 本地开发 `start.cmd`；Docker 部署 `powershell scripts/deploy.ps1`；两者不可同时运行。

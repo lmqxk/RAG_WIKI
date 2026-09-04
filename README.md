@@ -171,8 +171,7 @@ RAG_ZB/
 ├─ .tools/                   # 项目级工具、缓存和运行依赖
 ├─ .env                      # 本地运行配置，不提交 Git
 ├─ .env.example              # 环境变量模板
-├─ start.cmd                 # Windows 一键启动
-└─ 规范智能问答系统-当前架构.xmind
+└─ start.cmd                 # Windows 一键启动（本地开发）
 ```
 
 ## 环境隔离
