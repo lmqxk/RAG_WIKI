@@ -87,7 +87,7 @@ export function MarkdownMessage({ content, citations, onCitationClick }: Markdow
                 }}
                 className="mx-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded border border-primary/40 bg-primary/10 px-1 align-middle text-[0.75em] font-medium text-primary no-underline transition hover:bg-primary/20"
               >
-                {children}
+                [{children}]
               </a>
             );
           }

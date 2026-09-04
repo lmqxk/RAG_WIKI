@@ -93,3 +93,11 @@
 - 修复：`markdown-message.tsx` 给 ReactMarkdown 传入 `urlTransform={(url) => url.startsWith("rag-citation:") ? url : defaultUrlTransform(url)}`，放行引用协议、其余 URL 走默认消毒。
 - 同类回扫：全项目搜索其他自定义协议链接（仅 markdown-message.tsx 一处）；浏览器端到端复核「[n] 点击 → 资料面板弹出 → 卡片 ring 高亮 → 预览 PDF 第 N 页新标签页 #page=N 跳页」完整链路。
 - 验证：重新构建前端镜像并重启容器后，浏览器实测回答完成时 `a[href^="rag-citation:"]` 数量 13（修复前恒为 0）；点击 [1] 弹出原文资料 Sheet 且对应卡片高亮；PDF 在新标签页打开并定位到引用页码。
+
+## 2026-09-04 feature: 行内引用渲染改为带方框的 [n] 样式
+
+- 需求：行内引用此前显示为方框内仅数字 `1`，用户要求保持 `[1]` 文本样式并加方框。
+- 方案：`markdown-message.tsx` 引用锚点渲染 `[${children}]`（方括号进入方框内），沿用既有边框/背景/hover 样式。
+- 实现：单行改动 `markdown-message.tsx` L90 `{children}` → `[{children}]`；重建前端镜像并重启容器。
+- 同类扩展：`EvidenceSheet` 卡片徽章本就是 `[n]` 样式，与此统一；wiki 工作区共用 MarkdownMessage 组件自动生效。
+- 验证：浏览器实测引用链接 textContent 为 `[1]`，computedStyle 确认 1px 边框 + 半透明背景；点击后资料面板弹出、卡片高亮、预览 PDF 正常。
