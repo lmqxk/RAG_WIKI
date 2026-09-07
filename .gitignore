@@ -29,6 +29,9 @@ test/*.pdf
 test/*_paddlevl/
 展示/
 
+# 评测数据与结果
+eval/
+
 # 环境变量与密钥
 .env
 .env.*
