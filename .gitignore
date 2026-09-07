@@ -32,6 +32,10 @@ test/*_paddlevl/
 # 评测数据与结果
 eval/
 
+# 内部工程文档
+AGENTS.md
+review_log.md
+
 # 环境变量与密钥
 .env
 .env.*
