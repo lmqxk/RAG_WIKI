@@ -120,7 +120,6 @@ PDF 上传
 双击项目根目录的 `start.cmd`，或在 PowerShell 中运行：
 
 ```powershell
-cd E:\lmq\RAG_WIKI
 .\start.cmd
 ```
 
@@ -154,7 +153,7 @@ Ollama 通过 OpenAI 兼容接口接入，修改配置后需要重启后端。
 ## 目录结构
 
 ```text
-RAG_ZB/
+RAG_WIKI/
 ├─ backend/                  # FastAPI 后端
 │  ├─ src/backend/          # 业务源代码
 │  ├─ tests/                # 后端测试
@@ -311,16 +310,14 @@ $env:RAG_RERANK_MODEL = "your-rerank-model"
 后端：
 
 ```powershell
-$env:UV_CACHE_DIR = "E:\lmq\RAG_WIKI\.tools\uv-cache"
-E:\lmq\RAG_WIKI\.tools\uv\bin\uv.exe run --project backend ruff check backend
-E:\lmq\RAG_WIKI\.tools\uv\bin\uv.exe run --project backend pytest -q
+uv run --project backend ruff check backend
+uv run --project backend pytest -q
 ```
 
 前端：
 
 ```powershell
-$node = "C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
-& $node ".tools\npm-cli\package\bin\npm-cli.js" run build --prefix frontend
+npm run build --prefix frontend
 ```
 
 ## 首版边界

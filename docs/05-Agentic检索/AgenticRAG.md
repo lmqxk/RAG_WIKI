@@ -138,6 +138,5 @@ Embedding 不可用      -> 健康接口显示未就绪，稠密检索降级 BM2
 ## 相关测试
 
 ```powershell
-cd E:\lmq\RAG_ZB
-E:\lmq\RAG_ZB\.tools\uv\bin\uv.exe run --project backend pytest backend\tests\test_agent.py -q
+uv run --project backend pytest backend\tests\test_agent.py -q
 ```
