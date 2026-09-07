@@ -120,7 +120,7 @@ PDF 上传
 双击项目根目录的 `start.cmd`，或在 PowerShell 中运行：
 
 ```powershell
-cd E:\lmq\RAG_ZB
+cd E:\lmq\RAG_WIKI
 .\start.cmd
 ```
 
@@ -311,9 +311,9 @@ $env:RAG_RERANK_MODEL = "your-rerank-model"
 后端：
 
 ```powershell
-$env:UV_CACHE_DIR = "E:\lmq\RAG_ZB\.tools\uv-cache"
-E:\lmq\RAG_ZB\.tools\uv\bin\uv.exe run --project backend ruff check backend
-E:\lmq\RAG_ZB\.tools\uv\bin\uv.exe run --project backend pytest -q
+$env:UV_CACHE_DIR = "E:\lmq\RAG_WIKI\.tools\uv-cache"
+E:\lmq\RAG_WIKI\.tools\uv\bin\uv.exe run --project backend ruff check backend
+E:\lmq\RAG_WIKI\.tools\uv\bin\uv.exe run --project backend pytest -q
 ```
 
 前端：
