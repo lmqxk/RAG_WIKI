@@ -10,12 +10,12 @@
 # 可拆卸 GPU 模型服务（--profile gpu）：
 #   docker compose --profile gpu up -d   启动本机 embedding + reranker
 #   不加 profile 时只启动基础三件套，embedding 自动降级为 BM25 词法检索
-name: rag-zb
+name: rag-wiki
 
 services:
   qdrant:
     image: qdrant/qdrant:v1.16.2
-    container_name: rag-zb-qdrant
+    container_name: rag-wiki-qdrant
     restart: unless-stopped
     ports:
       - "127.0.0.1:6333:6333"
@@ -30,7 +30,7 @@ services:
 
   embedding:
     image: vllm/vllm-openai:latest
-    container_name: rag-zb-embedding
+    container_name: rag-wiki-embedding
     restart: unless-stopped
     profiles: ["gpu"]
     gpus: all
@@ -49,7 +49,7 @@ services:
     environment:
       VLLM_USE_MODELSCOPE: "1"
     volumes:
-      - rag-zb-models:/root/.cache
+      - rag-wiki-models:/root/.cache
     ports:
       - "127.0.0.1:8010:8000"
     healthcheck:
@@ -67,7 +67,7 @@ services:
 
   reranker:
     image: vllm/vllm-openai:latest
-    container_name: rag-zb-reranker
+    container_name: rag-wiki-reranker
     restart: unless-stopped
     profiles: ["gpu"]
     gpus: all
@@ -88,7 +88,7 @@ services:
     environment:
       VLLM_USE_MODELSCOPE: "1"
     volumes:
-      - rag-zb-models:/root/.cache
+      - rag-wiki-models:/root/.cache
     ports:
       - "127.0.0.1:8011:8000"
     healthcheck:
@@ -106,7 +106,7 @@ services:
 
   backend:
     build: ./backend
-    container_name: rag-zb-backend
+    container_name: rag-wiki-backend
     restart: unless-stopped
     env_file: .env
     environment:
@@ -147,7 +147,7 @@ services:
       context: ./frontend
       args:
         NEXT_PUBLIC_API_PORT: ${RAG_API_PORT:-8008}
-    container_name: rag-zb-frontend
+    container_name: rag-wiki-frontend
     restart: unless-stopped
     ports:
       - "${RAG_FRONTEND_PORT:-3000}:3000"
@@ -168,4 +168,4 @@ services:
       start_period: 20s
 
 volumes:
-  rag-zb-models:
+  rag-wiki-models:
