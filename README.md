@@ -330,3 +330,7 @@ $node = "C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\no
 - Embedding/Reranker 为 Qwen3-0.6B（vLLM 容器，`--profile gpu` 启动）；无 GPU 时稠密检索降级为 BM25 词法模式。哈希向量仅作为显式调试后端保留。
 - 换 Embedding 模型后需用 `scripts/rebuild_vectors.py` 重建 Qdrant 向量（chunk ID 不变，Wiki 锚点不受影响）。
 - 条件判断、合规和法律问题只提供文档依据，不替代专业审查或法律意见。
+
+## License
+
+[MIT](LICENSE)
